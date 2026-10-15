@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+import argparse
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import json
+import platform
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+REPOSITORIES = {
+    "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
+    "sift": "https://github.com/astibal/sift.git",
+    "smithproxy": "https://github.com/astibal/smithproxy.git",
+}
+
+
+def _run(command: list[str], *, quiet: bool = False) -> None:
+    subprocess.run(command, check=True,
+                   stdout=subprocess.DEVNULL if quiet else None,
+                   stderr=subprocess.DEVNULL if quiet else None)
+
+
+def _sync_checkout(path: Path, repository: str, ref: str) -> None:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _run(["git", "clone", "--recurse-submodules", repository, str(path)])
+    if not (path / ".git").is_dir():
+        raise RuntimeError(f"Saslik odmítá přepsat cizí adresář {path}.")
+    changed = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"],
+        check=True, text=True, stdout=subprocess.PIPE,
+    ).stdout.strip()
+    if changed:
+        raise RuntimeError(f"Zdrojový strom má lokální změny: {path}")
+    _run(["git", "-C", str(path), "fetch", "origin", ref])
+    _run(["git", "-C", str(path), "checkout", "-B", ref, "FETCH_HEAD"])
+    _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive"])
+
+
+def _ensure_checkout(path: Path, repository: str) -> None:
+    """Clone a dependency once; never mutate an existing developer checkout."""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _run(["git", "clone", "--branch", "main", "--recurse-submodules",
+              repository, str(path)])
+    if not (path / ".git").is_dir():
+        raise RuntimeError(f"Saslik odmítá použít cizí adresář {path}.")
+
+
+def sync(lab: Path, smithproxy_ref: str) -> None:
+    sources = lab / "src"
+    spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
+    sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
+    smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
+    _ensure_checkout(sources / "smithproxy-spider", spider_repo)
+    _ensure_checkout(sources / "sift", sift_repo)
+    _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref)
+    state = lab / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "source-ref").write_text(smithproxy_ref + "\n", encoding="utf-8")
+
+
+def build(lab: Path) -> None:
+    jobs = f"-j{os.cpu_count() or 1}"
+    projects = [
+        (lab / "src/smithproxy", lab / "build/smithproxy", ["-DBUILD_TESTING=OFF"], "smithproxy"),
+        (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
+        (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
+    ]
+    for source, destination, options, target in projects:
+        _run(["cmake", "-S", str(source), "-B", str(destination),
+              "-DCMAKE_BUILD_TYPE=Release", *options])
+        command = ["cmake", "--build", str(destination), jobs]
+        if target:
+            command.extend(["--target", target])
+        _run(command)
+
+
+def save_binary_bundle(lab: Path, destination: Path) -> None:
+    required = {
+        "build/smithproxy": lab / "build/smithproxy",
+        "build/spider": lab / "build/spider",
+        "build/sift": lab / "build/sift",
+        "runtime/frontend": lab / "src/smithproxy-spider/frontend",
+    }
+    for source in required.values():
+        if not source.exists():
+            raise RuntimeError(f"Binary bundle nelze vytvořit, chybí {source}.")
+    manifest = {
+        "format": 1,
+        "machine": platform.machine(),
+        "system": platform.system(),
+        "source_ref": (lab / "state/source-ref").read_text(encoding="utf-8").strip()
+        if (lab / "state/source-ref").is_file() else "unknown",
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        manifest_path = Path(temporary) / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        with tarfile.open(destination, "w:gz") as bundle:
+            bundle.add(manifest_path, arcname="manifest.json")
+            for archive_name, source in required.items():
+                bundle.add(source, arcname=archive_name)
+
+
+def load_binary_bundle(lab: Path, source: Path) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(dir=lab) as temporary:
+        staging = Path(temporary)
+        try:
+            with tarfile.open(source, "r:gz") as bundle:
+                members = bundle.getmembers()
+                allowed = ("manifest.json", "build/smithproxy/", "build/spider/",
+                           "build/sift/", "runtime/frontend/")
+                for member in members:
+                    if member.issym() or member.islnk() or member.name.startswith("/") or ".." in Path(member.name).parts:
+                        raise RuntimeError("Binary bundle obsahuje nebezpečnou cestu.")
+                    if member.name != "manifest.json" and not any(
+                            member.name == prefix.rstrip("/") or member.name.startswith(prefix)
+                            for prefix in allowed[1:]):
+                        raise RuntimeError(f"Neočekávaný soubor v binary bundle: {member.name}")
+                bundle.extractall(staging)
+        except tarfile.TarError as exc:
+            raise RuntimeError("Soubor není platný Saslik binary bundle.") from exc
+        manifest_path = staging / "manifest.json"
+        if not manifest_path.is_file():
+            raise RuntimeError("Binary bundle nemá manifest.")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("format") != 1 or manifest.get("machine") != platform.machine():
+            raise RuntimeError(f"Binary bundle není určený pro {platform.machine()}.")
+        for required in (staging / "build/smithproxy/smithproxy",
+                         staging / "build/spider/smithproxy-spider",
+                         staging / "build/sift/siftd", staging / "runtime/frontend"):
+            if not required.exists():
+                raise RuntimeError(f"Binary bundle je neúplný, chybí {required.name}.")
+        build = lab / "build"
+        build.mkdir(parents=True, exist_ok=True)
+        for name in ("smithproxy", "spider", "sift"):
+            destination = build / name
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.move(str(staging / "build" / name), destination)
+        frontend = lab / "src/smithproxy-spider/frontend"
+        if frontend.exists():
+            shutil.rmtree(frontend)
+        frontend.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging / "runtime/frontend"), frontend)
+        marker = lab / "state/binary-bundle.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return manifest
+
+
+def _openssl(*arguments: str) -> None:
+    _run(["openssl", *arguments], quiet=True)
+
+
+def _validate_ca_pair(certificate: Path, key: Path) -> None:
+    if not certificate.is_file() or not key.is_file():
+        raise RuntimeError("Vybraný CA certifikát nebo klíč neexistuje.")
+    cert_public = subprocess.run(
+        ["openssl", "x509", "-in", str(certificate), "-pubkey", "-noout"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    ).stdout
+    key_public = subprocess.run(
+        ["openssl", "pkey", "-in", str(key), "-pubout"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    ).stdout
+    if cert_public != key_public:
+        raise RuntimeError("CA certifikát a privátní klíč k sobě nepatří.")
+
+
+def initialize_state(lab: Path, template: str = "spider-sift", *,
+                     ca_cert: Path | None = None, ca_key: Path | None = None) -> bool:
+    """Create state only for a new lab; never rewrite an existing config/CA."""
+    state = lab / "state"
+    config = state / "smithproxy.cfg"
+    certs = state / "certs/default"
+    env = state / "state.env"
+    existing = (config.exists(), certs.exists(), env.exists())
+    if any(existing):
+        if not all(existing):
+            raise RuntimeError("Neúplný persistentní stav; config, CA a state.env musí existovat spolu.")
+        return False
+    if (ca_cert is None) != (ca_key is None):
+        raise RuntimeError("Existující CA vyžaduje certifikát i privátní klíč.")
+    if ca_cert is not None and ca_key is not None:
+        _validate_ca_pair(ca_cert, ca_key)
+    state.mkdir(parents=True, exist_ok=True)
+    certs.mkdir(parents=True)
+    source = lab / "src/smithproxy"
+    shutil.copy2(source / "etc/certs/default/sslca.json", certs / "sslca.json")
+    if ca_cert is not None and ca_key is not None:
+        shutil.copy2(ca_cert, certs / "ca-cert.pem")
+        shutil.copy2(ca_key, certs / "ca-key.pem")
+    else:
+        _openssl("req", "-x509", "-newkey", "rsa:3072", "-sha256", "-days", "365",
+                 "-nodes", "-keyout", str(certs / "ca-key.pem"), "-out",
+                 str(certs / "ca-cert.pem"), "-subj",
+                 "/CN=Smithproxy Saslik CA/O=Smithproxy Saslik/C=CZ",
+                 "-addext", "basicConstraints=critical,CA:TRUE",
+                 "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout",
+             str(certs / "srv-key.pem"), "-out", str(state / "server.csr"),
+             "-subj", "/CN=smithproxy-test")
+    extensions = state / "server.ext"
+    extensions.write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectAltName=DNS:smithproxy-test,IP:10.254.77.2,IP:10.254.77.1\n",
+        encoding="ascii",
+    )
+    _openssl("x509", "-req", "-in", str(state / "server.csr"), "-CA",
+             str(certs / "ca-cert.pem"), "-CAkey", str(certs / "ca-key.pem"),
+             "-CAcreateserial", "-out", str(certs / "srv-cert.pem"), "-days", "365",
+             "-sha256", "-extfile", str(extensions))
+    for prefix in ("portal", "cl"):
+        shutil.copy2(certs / "srv-key.pem", certs / f"{prefix}-key.pem")
+        shutil.copy2(certs / "srv-cert.pem", certs / f"{prefix}-cert.pem")
+    for key in certs.glob("*-key.pem"):
+        key.chmod(0o600)
+    api_key = secrets.token_hex(24)
+    spider_token = secrets.token_hex(24)
+    _create_config(lab, api_key)
+    from .routing import apply_starting_template
+    apply_starting_template(lab, template)
+    env.write_text(
+        f"SMITHPROXY_API_KEY={api_key}\n"
+        f"SPIDER_TOKEN={spider_token}\n"
+        "SMITHPROXY_API_URL=https://10.254.77.2:55580\n"
+        "SMITHPROXY_CONNECT_URL=http://10.254.77.2:33128\n"
+        "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n"
+        f"SMITHPROXY_CA_CERT={certs / 'ca-cert.pem'}\n"
+        "SMITHPROXY_CLI=10.254.77.2:55000\n",
+        encoding="utf-8",
+    )
+    env.chmod(0o600)
+    return True
+
+
+def _create_config(lab: Path, api_key: str) -> None:
+    state = lab / "state"
+    source = lab / "src/smithproxy"
+    certs = state / "certs/default"
+    text = (source / "etc/smithproxy.cfg").read_text(encoding="utf-8")
+    replacements = {
+        "accept_tproxy = TRUE;": "accept_tproxy = TRUE;",
+        "accept_redirect = TRUE;": "accept_redirect = FALSE;",
+        "accept_socks = TRUE;": "accept_socks = TRUE;",
+        "accept_http_connect = FALSE;": "accept_http_connect = TRUE;",
+        'http_connect_port = "3128";': 'http_connect_port = "33128";',
+        "http_connect_workers = 0;": "http_connect_workers = 1;",
+        'certs_path = "/etc/smithproxy/certs/default/";': f'certs_path = "{certs}/";',
+        'certs_ca_key_password = "smithproxy";': 'certs_ca_key_password = "";',
+        'messages_dir = "/etc/smithproxy/msg/en/";': f'messages_dir = "{source / "etc/msg/en"}/";',
+        "port = 50000;": "port = 55000;",
+        'log_file = "/var/log/smithproxy/messages.%s.log";': f'log_file = "{state}/messages.%s.log";',
+        'sslkeylog_file = "/var/log/smithproxy/sslkeylog.%s.log";': f'sslkeylog_file = "{state}/sslkeylog.%s.log";',
+        'dir = "/var/smithproxy/data"': f'dir = "{state}"',
+    }
+    for old, new in replacements.items():
+        if old not in text:
+            raise RuntimeError(f"Výchozí Smithproxy config neobsahuje očekávanou hodnotu: {old}")
+        text = text.replace(old, new, 1)
+    settings = f'''settings = {{
+    accept_api = TRUE;
+    http_api = {{
+        keys = [ "{api_key}" ];
+        key_timeout = 3600;
+        key_extend_on_access = TRUE;
+        loopback_only = FALSE;
+        bind_address = "0.0.0.0";
+        allow_api_header = TRUE;
+        port = 55580;
+        pam_login = FALSE;
+    }};
+    webhook = {{
+        enabled = TRUE;
+        url = "http://10.254.77.1:18080/webhook";
+        tls_verify = FALSE;
+        api_override = TRUE;
+        ping_interval = 5;
+        sift = TRUE;
+        sift_url = "http://10.254.77.1:18081/webhook";
+    }};
+'''
+    if "settings = {" not in text:
+        raise RuntimeError("Výchozí Smithproxy config nemá settings blok.")
+    (state / "smithproxy.cfg").write_text(text.replace("settings = {", settings, 1),
+                                           encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="saslik-workspace")
+    parser.add_argument("action", choices=("sync", "build", "init", "bundle-save", "bundle-load", "bundle-clear"))
+    parser.add_argument("lab", type=Path)
+    parser.add_argument("--ref", default="master")
+    parser.add_argument("--template", choices=("spider-sift", "spider", "proxy"),
+                        default="spider-sift")
+    parser.add_argument("--ca-cert", type=Path)
+    parser.add_argument("--ca-key", type=Path)
+    parser.add_argument("--bundle", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "sync":
+            sync(args.lab, args.ref)
+        elif args.action == "build":
+            build(args.lab)
+        elif args.action == "init":
+            created = initialize_state(args.lab, args.template,
+                                       ca_cert=args.ca_cert, ca_key=args.ca_key)
+            print("Nový persistentní config a CA vytvořeny." if created
+                  else "Persistentní config a CA zachovány beze změny.")
+        elif args.action == "bundle-clear":
+            (args.lab / "state/binary-bundle.json").unlink(missing_ok=True)
+        elif not args.bundle:
+            raise RuntimeError("Chybí cesta k binary bundle.")
+        elif args.action == "bundle-save":
+            save_binary_bundle(args.lab, args.bundle)
+        else:
+            load_binary_bundle(args.lab, args.bundle)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"saslik-workspace: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
