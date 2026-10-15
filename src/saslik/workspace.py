@@ -17,11 +17,16 @@ REPOSITORIES = {
     "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
     "sift": "https://github.com/astibal/sift.git",
     "smithproxy": "https://github.com/astibal/smithproxy.git",
+    "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
 }
 
 
 def _run(command: list[str], *, quiet: bool = False) -> None:
-    subprocess.run(command, check=True,
+    environment = os.environ.copy()
+    if command and command[0] == "git":
+        environment.setdefault("GIT_TERMINAL_PROMPT", "0")
+        environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    subprocess.run(command, check=True, env=environment,
                    stdout=subprocess.DEVNULL if quiet else None,
                    stderr=subprocess.DEVNULL if quiet else None)
 
@@ -38,6 +43,9 @@ def _sync_checkout(path: Path, repository: str, ref: str) -> None:
     ).stdout.strip()
     if changed:
         raise RuntimeError(f"Zdrojový strom má lokální změny: {path}")
+    # Managed checkouts follow the configured repository.  This also migrates
+    # older HTTPS viewer checkouts to SSH without deleting local objects.
+    _run(["git", "-C", str(path), "remote", "set-url", "origin", repository])
     _run(["git", "-C", str(path), "fetch", "origin", ref])
     _run(["git", "-C", str(path), "checkout", "-B", ref, "FETCH_HEAD"])
     _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive"])
@@ -58,9 +66,13 @@ def sync(lab: Path, smithproxy_ref: str) -> None:
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
+    viewer_repo = os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
+                                 REPOSITORIES["capture-zone-viewer"])
+    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF", "main")
     _ensure_checkout(sources / "smithproxy-spider", spider_repo)
     _ensure_checkout(sources / "sift", sift_repo)
     _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref)
+    _sync_checkout(sources / "capture-zone-viewer", viewer_repo, viewer_ref)
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "source-ref").write_text(smithproxy_ref + "\n", encoding="utf-8")
@@ -80,6 +92,14 @@ def build(lab: Path) -> None:
         if target:
             command.extend(["--target", target])
         _run(command)
+    viewer_source = lab / "src/capture-zone-viewer"
+    viewer_venv = lab / "runtime/pcap-viewer-venv"
+    if not (viewer_source / "pyproject.toml").is_file():
+        raise RuntimeError("Capture.Zone PCAP Viewer nemá instalovatelný pyproject.toml.")
+    if not (viewer_venv / "bin/python").is_file():
+        _run([sys.executable, "-m", "venv", str(viewer_venv)])
+    _run([str(viewer_venv / "bin/python"), "-m", "pip", "install", "--upgrade",
+          str(viewer_source)])
 
 
 def save_binary_bundle(lab: Path, destination: Path) -> None:

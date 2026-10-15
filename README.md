@@ -5,6 +5,18 @@ Saslik owns the workspace, namespace and component lifecycle. Long-running
 components are transient systemd services grouped in a per-lab slice; upstream
 Spider integration scripts are not used at runtime.
 
+The lab also installs and starts the standalone Capture.Zone PCAP Viewer. Its
+catalog, linked captures and derived analysis data live inside the selected
+Saslik workspace. Override its source with `SASLIK_PCAP_VIEWER_REPOSITORY` and
+`SASLIK_PCAP_VIEWER_REF`; the default is the `main` branch of
+`astibal/capture-zone-portal`.
+
+Saslik runs the viewer and its authenticated storage API as separate transient
+services. The storage service watches Smithproxy's workspace data, safely picks
+up completed captures and listens only on loopback; the browser-facing viewer
+uses its private `0600` token through the shared-filesystem API. Startup and the
+Status tab use each service's `/readyz` contract rather than a shallow HTTP ping.
+
 ```bash
 python3 -m pip install .
 saslik
@@ -35,7 +47,8 @@ namespace without relying on PREROUTING/DNAT hairpin behaviour.
 
 ## Requirements
 
-Linux with systemd, Python 3.11+, `sudo`, Git, CMake, a C++ compiler and the dependencies
+Linux with systemd, Python 3.11+ including `venv`, `sudo`, Git, CMake, a C++
+compiler, Wireshark CLI tools (`sharkd`, `tshark`, `editcap`) and the dependencies
 required by Smithproxy, Spider and Sift. Saslik uses network namespaces,
 nftables and transient systemd services and therefore needs root. Saslik itself stays
 unprivileged. At startup it explains why privileges are needed, acquires one

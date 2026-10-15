@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -79,6 +80,7 @@ class SystemdComponents:
     LEGACY_PID_FILES = (
         "smithproxy.pid", "cli-forward.pid", "spider.pid", "sift.pid",
         "frontend.pid", "expose-api.pid", "expose-proxy.pid", "expose-cli.pid",
+        "pcap-viewer.pid",
     )
 
     def __init__(self, lab: Path, instance: str, expose_address: str = "127.0.0.1") -> None:
@@ -109,12 +111,20 @@ class SystemdComponents:
         frontend.mkdir(parents=True, exist_ok=True)
         shutil.copytree(spider_source / "frontend", frontend, dirs_exist_ok=True)
         shutil.copy2(self.state / "certs/default/ca-cert.pem", frontend / "test-ca.pem")
+        viewer_workspace = self.state / "pcap-viewer"
+        viewer_workspace.mkdir(parents=True, exist_ok=True)
+        token = viewer_workspace / "storage.token"
+        if not token.exists():
+            token.write_text(secrets.token_urlsafe(32), encoding="ascii")
+            token.chmod(0o600)
 
     def components(self) -> list[Component]:
         values = _state_env(self.lab)
         smithproxy = self.lab / "build/smithproxy/smithproxy"
         spider = self.lab / "build/spider/smithproxy-spider"
         sift = self.lab / "build/sift/siftd"
+        pcap_viewer = self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
+        pcap_storage = self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"
         config = self.state / "smithproxy.cfg"
         socat = shutil.which("socat") or "socat"
         python = sys.executable
@@ -138,6 +148,21 @@ class SystemdComponents:
             "sift", (str(sift), "--bind", "0.0.0.0", "--port", "18081"),
             self.state / "sift.log",
         ))
+        if pcap_viewer.is_file() and pcap_storage.is_file():
+            viewer_workspace = self.state / "pcap-viewer"
+            result.append(Component(
+                "pcap-storage",
+                (str(pcap_storage), "--workspace", str(viewer_workspace),
+                 "--watch-root", str(self.state), "--port", "15175"),
+                self.state / "pcap-storage.log",
+            ))
+            result.append(Component(
+                "pcap-viewer",
+                (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
+                 "--storage-token-file", str(viewer_workspace / "storage.token"),
+                 "--port", "15174", "--no-browser"),
+                self.state / "pcap-viewer.log",
+            ))
         result.extend([
                 Component(
                     "spider",
@@ -225,6 +250,7 @@ class SystemdComponents:
             "spider.pid": str(self.lab / "build/spider/smithproxy-spider"),
             "sift.pid": str(self.lab / "build/sift/siftd"),
             "frontend.pid": str(self.state / "frontend"),
+            "pcap-viewer.pid": "capture-viewer",
             "cli-forward.pid": "TCP4-LISTEN:55000",
             "expose-api.pid": "TCP4-LISTEN:55580",
             "expose-proxy.pid": "TCP4-LISTEN:33128",
@@ -259,6 +285,8 @@ class SystemdComponents:
         try:
             for component in self.components():
                 self._start_component(component)
+                if component.name == "pcap-storage":
+                    self._wait_storage_ready()
             self._wait_ready()
             self.print_endpoints()
         except Exception:
@@ -280,12 +308,12 @@ class SystemdComponents:
             return self.components()
         except (OSError, KeyError):
             names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                     "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+                     "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
             return [Component(name, (), self.state / f"{name}.log") for name in names]
 
     def status(self) -> dict[str, dict[str, str | int | None]]:
         names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                 "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+                 "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
         units = {unit_name(self.instance, name): name for name in names}
         output = _capture([
             "systemctl", "show", *units,
@@ -318,6 +346,8 @@ class SystemdComponents:
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
         checks.append(("http://127.0.0.1:18080/api/health", {}, False))
         checks.append(("http://127.0.0.1:18081/api/health", {}, False))
+        if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+            checks.append(("http://127.0.0.1:15174/readyz", {}, False))
         pending = list(checks)
         deadline = time.monotonic() + 30
         while pending and time.monotonic() < deadline:
@@ -341,6 +371,21 @@ class SystemdComponents:
             self.down()
             raise RuntimeError(f"Komponenty nenaběhly: {failed}")
 
+    def _wait_storage_ready(self) -> None:
+        token = (self.state / "pcap-viewer/storage.token").read_text(encoding="ascii").strip()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            request = urllib.request.Request(
+                "http://127.0.0.1:15175/readyz",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=1):
+                    return
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.15)
+        raise RuntimeError("Capture.Zone storage API nenaběhlo.")
+
     def print_endpoints(self) -> None:
         values = _state_env(self.lab)
         print("Smithproxy:")
@@ -353,6 +398,8 @@ class SystemdComponents:
         print("  Backend: http://127.0.0.1:18080")
         print(f"  Token:   {values['SPIDER_TOKEN']}")
         print("  Sift:    http://127.0.0.1:18081/api/status")
+        if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+            print("PCAP Viewer: http://127.0.0.1:15174/")
         print(f"Logs:    journalctl -u 'saslik-{_unit_instance(self.instance)}-*'")
 
 

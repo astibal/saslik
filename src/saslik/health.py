@@ -101,6 +101,16 @@ def collect(lab: Path) -> dict[str, object]:
         "spider": lambda: _http_check("http://127.0.0.1:18080/api/health"),
         "sift": lambda: _http_check("http://127.0.0.1:18081/api/health"),
     }
+    if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+        checks["pcap_viewer"] = lambda: _http_check("http://127.0.0.1:15174/readyz")
+        try:
+            storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
+                encoding="ascii").strip()
+        except OSError:
+            storage_token = ""
+        checks["pcap_storage"] = lambda: _http_check(
+            "http://127.0.0.1:15175/readyz",
+            {"Authorization": f"Bearer {storage_token}"} if storage_token else {})
     with ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="saslik-health") as pool:
         futures = {name: pool.submit(callback) for name, callback in checks.items()}
         results = {name: future.result() for name, future in futures.items()}

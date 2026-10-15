@@ -1,13 +1,22 @@
 import tempfile
 import shutil
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.workspace import initialize_state, load_binary_bundle, save_binary_bundle
+from saslik.workspace import _run, initialize_state, load_binary_bundle, save_binary_bundle
 
 
 class WorkspaceTests(unittest.TestCase):
+    @patch("saslik.workspace.subprocess.run")
+    def test_git_is_noninteractive_and_uses_ssh_agent(self, run):
+        _run(["git", "fetch", "origin", "main"])
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual("0", environment["GIT_TERMINAL_PROMPT"])
+        self.assertEqual("ssh -oBatchMode=yes", environment["GIT_SSH_COMMAND"])
+        self.assertEqual(os.environ.get("SSH_AUTH_SOCK"), environment.get("SSH_AUTH_SOCK"))
+
     def test_binary_bundle_round_trip_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory) / "lab"
