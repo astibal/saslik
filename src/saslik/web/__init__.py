@@ -1,0 +1,1 @@
+"""Packaged Saslik web assets."""
