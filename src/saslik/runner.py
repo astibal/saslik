@@ -32,6 +32,17 @@ def data_root() -> Path:
     return Path.home() / ".local/share/saslik"
 
 
+def ensure_friendly_data_link(root: Path | None = None) -> Path | None:
+    """Expose the XDG data directory as the user-facing ~/Saslik path."""
+    target = (root or data_root()).expanduser().resolve()
+    link = Path.home() / "Saslik"
+    if link.exists() or link.is_symlink():
+        return link if link.is_symlink() and link.resolve() == target else None
+    target.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=True)
+    return link
+
+
 def validate_ref(value: str) -> str:
     value = value.strip()
     if not REF_RE.fullmatch(value) or ".." in value:
@@ -184,7 +195,9 @@ class LabRunner:
     def _commands(self, action: str, branch: str, template: str = "spider-sift",
                   ca_cert: str = "", ca_key: str = "") -> list[list[str]]:
         sudo = ["sudo", "-n"]
-        workspace = sudo + [sys.executable, "-m", "saslik.workspace"]
+        # Sources, builds and persistent workspace data belong to the desktop
+        # user.  In particular Git must retain access to that user's SSH agent.
+        workspace = [sys.executable, "-m", "saslik.workspace"]
         network = sudo + [sys.executable, "-m", "saslik.network"]
         components = sudo + [sys.executable, "-m", "saslik.components"]
         pasta = sudo + [sys.executable, "-m", "saslik.pasta"]
@@ -278,6 +291,7 @@ def parse_endpoints(lines) -> dict[str, str]:
         "UI": "spider_ui", "Backend": "spider_backend", "Token": "spider_token",
         "Sift": "sift", "API": "smithproxy_api", "HTTP CONNECT": "proxy",
         "CLI": "cli", "CA": "ca", "State": "state", "Logs": "logs",
+        "PCAP Viewer": "pcap_viewer",
     }
     for raw in lines:
         line = raw.strip()

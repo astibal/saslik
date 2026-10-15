@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .runner import LabRunner, data_root
 from .ca import install_store, store_status
-from .instance import Instance
+from .instance import Instance, remember_instance
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 
@@ -377,6 +377,7 @@ class Handler(BaseHTTPRequestHandler):
         if operation == "select":
             instance.ensure_config()
             self.server.runner.select_instance(instance)
+            remember_instance(instance.name)
             self.server.guardian_arm()
             return self._json({"ok": True, "workspace": instance.name})
         if operation == "create":
@@ -384,6 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(f"Workspace už existuje: {workspace}")
             instance.ensure_config()
             self.server.runner.select_instance(instance)
+            remember_instance(instance.name)
             self.server.guardian_arm()
             return self._json({"ok": True, "workspace": instance.name})
         if operation != "rename":
@@ -398,6 +400,7 @@ class Handler(BaseHTTPRequestHandler):
             renamed = Instance.load(new_name)
             renamed.ensure_config()
             self.server.runner.select_instance(renamed)
+            remember_instance(renamed.name)
             self.server.guardian_arm()
         self._json({"ok": True, "workspace": new_name})
 

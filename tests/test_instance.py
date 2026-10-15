@@ -4,10 +4,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.instance import Instance, rename_instance, validate_instance_name
+from saslik.instance import (
+    Instance, remember_instance, remembered_instance, rename_instance,
+    validate_instance_name,
+)
 
 
 class InstanceTests(unittest.TestCase):
+    def test_last_workspace_is_persistent(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SASLIK_CONFIG_DIR": directory}
+        ):
+            self.assertEqual("default", remembered_instance())
+            remember_instance("lab1")
+            self.assertEqual("lab1", remembered_instance())
+
     def test_name_validation(self):
         self.assertEqual("lab-1.quic", validate_instance_name("lab-1.quic"))
         for value in ("", "../lab", "lab/one", "bad name", "x" * 49):

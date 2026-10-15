@@ -1,11 +1,31 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from saslik.runner import LabRunner, parse_endpoints, validate_ref
+from saslik.runner import LabRunner, ensure_friendly_data_link, parse_endpoints, validate_ref
 
 
 class RunnerTests(unittest.TestCase):
+    def test_friendly_data_link_is_safe_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "saslik.runner.Path.home", return_value=Path(directory)
+        ):
+            target = Path(directory) / ".local/share/saslik"
+            link = ensure_friendly_data_link(target)
+            self.assertEqual(Path(directory) / "Saslik", link)
+            self.assertEqual(target.resolve(), link.resolve())
+            self.assertEqual(link, ensure_friendly_data_link(target))
+
+    def test_friendly_data_link_never_replaces_existing_path(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "saslik.runner.Path.home", return_value=Path(directory)
+        ):
+            link = Path(directory) / "Saslik"
+            link.mkdir()
+            self.assertIsNone(ensure_friendly_data_link(Path(directory) / "data"))
+            self.assertTrue(link.is_dir())
+
     def test_refs(self):
         self.assertEqual("feature/api-ng", validate_ref("feature/api-ng"))
         for value in ("", "../main", "main;id", " main branch "):
@@ -16,11 +36,13 @@ class RunnerTests(unittest.TestCase):
         result = parse_endpoints([
             "Spider:", "  UI:      http://helmut:15173/", "  Token:   secret",
             "  HTTP CONNECT: http://10.254.77.2:33128", "  CLI: 10.254.77.2:55000",
+            "  PCAP Viewer: http://127.0.0.1:15174/",
         ])
         self.assertEqual("http://helmut:15173/", result["spider_ui"])
         self.assertEqual("http://helmut:15173/test-ca.pem", result["ca_download"])
         self.assertEqual("secret", result["spider_token"])
         self.assertEqual("http://10.254.77.2:33128", result["proxy"])
+        self.assertEqual("http://127.0.0.1:15174/", result["pcap_viewer"])
 
     def test_nat_is_default_and_does_not_start_pasta(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -31,6 +53,14 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(any("saslik.pasta snapshot" in command for command in joined))
         self.assertFalse(any("saslik.pasta up" in command for command in joined))
         self.assertFalse(any("run-test-" in command for command in joined))
+
+    def test_workspace_operations_run_as_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory))
+            commands = runner._commands("start", "main")
+        workspace_commands = [command for command in commands if "saslik.workspace" in command]
+        self.assertTrue(workspace_commands)
+        self.assertTrue(all(command[0] != "sudo" for command in workspace_commands))
 
     def test_pasta_wraps_runner_network_setup(self):
         with tempfile.TemporaryDirectory() as directory:

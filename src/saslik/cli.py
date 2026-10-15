@@ -5,8 +5,8 @@ import ipaddress
 import os
 import subprocess
 
-from .instance import Instance
-from .runner import LabRunner
+from .instance import Instance, remember_instance, remembered_instance
+from .runner import LabRunner, ensure_friendly_data_link
 from .server import serve
 
 
@@ -26,7 +26,7 @@ def acquire_privileges() -> None:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(prog="saslik", description="Smithproxy + Spider + Sift micro-launcher")
-    value.add_argument("-i", "--instance", default="default", help="pojmenovaný lab (default: default)")
+    value.add_argument("-i", "--instance", help="pojmenovaný lab (default: naposledy použitý)")
     display = value.add_mutually_exclusive_group()
     display.add_argument("--browser", action="store_const", const="browser", dest="display_mode",
                          help="otevřít v běžném výchozím browseru")
@@ -58,8 +58,10 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     override = "pasta" if args.pasta else args.egress
-    instance = Instance.load(args.instance, override)
+    instance = Instance.load(args.instance or remembered_instance(), override)
     instance.ensure_config()
+    remember_instance(instance.name)
+    ensure_friendly_data_link()
     web_host = getattr(args, "host", os.environ.get("SASLIK_WEB_HOST", "127.0.0.1"))
     try:
         remote = not ipaddress.ip_address(web_host).is_loopback

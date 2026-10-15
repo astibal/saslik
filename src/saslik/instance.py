@@ -32,6 +32,21 @@ def config_root() -> Path:
     return Path.home() / ".config/saslik"
 
 
+def remember_instance(name: str) -> None:
+    name = validate_instance_name(name)
+    root = config_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "last-workspace").write_text(name + "\n", encoding="utf-8")
+
+
+def remembered_instance() -> str:
+    path = config_root() / "last-workspace"
+    try:
+        return validate_instance_name(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return "default"
+
+
 @dataclass(frozen=True)
 class Instance:
     name: str
