@@ -29,6 +29,7 @@ from .ca import install_store, store_status
 from .instance import Instance, remember_instance
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
+from .settings import provision_settings, public_settings
 
 
 APP_BROWSERS = (
@@ -199,6 +200,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/workspaces":
             return self._json(self._workspaces())
+        if path == "/api/workspace/settings":
+            workspace = parse_qs(parsed.query).get("workspace", [""])[0]
+            lab, _ = self._workspace_target(workspace)
+            return self._json({"settings": public_settings(lab)})
         if path == "/api/ca":
             query = parse_qs(parsed.query)
             return self._ca(query.get("identity", [""])[0], query.get("workspace", [""])[0])
@@ -300,7 +305,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/binary/clear":
             return self._binary_clear()
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
-                        "/api/workspace/action"}:
+                        "/api/workspace/action", "/api/workspace/settings"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -323,6 +328,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._workspace_action(str(body.get("operation", "select")),
                                               str(body.get("workspace", "")),
                                               str(body.get("new_name", "")))
+            if path == "/api/workspace/settings":
+                workspace = str(body.get("workspace", ""))
+                lab, _ = self._workspace_target(workspace)
+                settings = body.get("settings", {})
+                if not isinstance(settings, dict):
+                    raise ValueError("Settings musí být objekt.")
+                provision_settings(lab, settings)
+                return self._json({"ok": True, "settings": public_settings(lab)})
             if path == "/api/action" and str(body.get("action", "")) == "stop":
                 if self.server.guardian_stop():
                     return self._json({"job_id": 0}, HTTPStatus.ACCEPTED)
@@ -593,12 +606,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, value: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(value).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # Closing or reloading the browser routinely cancels an active
+            # CLI long-poll request. The response is already irrelevant and
+            # must not turn a normal disconnect into a server traceback.
+            return
 
     def log_message(self, fmt: str, *args) -> None:
         pass

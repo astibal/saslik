@@ -1,8 +1,9 @@
 import socket
 import struct
 import unittest
+from unittest.mock import patch
 
-from saslik.probe import parse_a_response
+from saslik.probe import parse_a_response, proxy_probe
 
 
 class ProbeTests(unittest.TestCase):
@@ -17,6 +18,19 @@ class ProbeTests(unittest.TestCase):
         packet = struct.pack("!HHHHHH", 1, 0x8180, 0, 0, 0, 0)
         with self.assertRaisesRegex(ValueError, "neodpovídá"):
             parse_a_response(packet, 2)
+
+    @patch("saslik.probe.subprocess.run")
+    def test_explicit_proxy_probe_uses_requested_proxy(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "200"
+        run.return_value.stderr = ""
+        result = proxy_probe("https://example.com/", "socks5h://10.254.78.1:1080",
+                             "SOCKS5", insecure=True)
+        command = run.call_args.args[0]
+        self.assertEqual("ok", result["state"])
+        self.assertEqual("socks5h://10.254.78.1:1080",
+                         command[command.index("--proxy") + 1])
+        self.assertIn("--insecure", command)
 
 
 if __name__ == "__main__":

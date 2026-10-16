@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.components import Component, SystemdComponents, unit_name
+from saslik.settings import update_settings
 
 
 class ComponentTests(unittest.TestCase):
@@ -70,6 +71,27 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--watch-root", storage.command)
         self.assertIn("15175", storage.command)
 
+    def test_pcap_viewer_receives_workspace_ipinfo_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            (state / "state.env").write_text(
+                "SMITHPROXY_API_URL=https://10.254.77.2:55580\n"
+                "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n"
+                "SMITHPROXY_API_KEY=key\nSPIDER_TOKEN=token\n",
+                encoding="utf-8",
+            )
+            executable = lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (executable.parent / "capture-storage").touch()
+            update_settings(lab, {"ipinfo_token": "workspace-secret"})
+            viewer = next(component for component in
+                          SystemdComponents(lab, "lab1").components()
+                          if component.name == "pcap-viewer")
+        self.assertEqual(("IPINFO_TOKEN=workspace-secret",), viewer.environment)
+
     @patch("saslik.components._run")
     def test_component_is_started_as_transient_service_in_lab_slice(self, run):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,6 +105,19 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--slice=saslik-lab1.slice", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=NetworkNamespacePath=/run/netns/sxp-test", command)
+
+    @patch("saslik.components._run")
+    def test_forwarder_restarts_after_transient_bind_failure(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SystemdComponents(Path(directory), "lab1")
+            manager._start_component(Component(
+                "expose-cli", ("socat", "listen", "connect"),
+                Path(directory) / "expose-cli.log",
+                restart_on_failure=True,
+            ))
+        command = run.call_args_list[-1].args[0]
+        self.assertIn("--property=Restart=on-failure", command)
+        self.assertIn("--property=RestartSec=500ms", command)
 
 
 if __name__ == "__main__":

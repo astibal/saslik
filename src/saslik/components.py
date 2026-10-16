@@ -14,6 +14,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .settings import component_environment
+
 
 NAMESPACE = "sxp-test"
 PROBE_NAMESPACE = "saslik-probe"
@@ -68,6 +70,7 @@ class Component:
     log: Path
     environment: tuple[str, ...] = ()
     network_namespace: str | None = None
+    restart_on_failure: bool = False
 
 
 class SystemdComponents:
@@ -142,6 +145,7 @@ class SystemdComponents:
                  "TCP4:127.0.0.1:55000"),
                 self.state / "cli-forward.log",
                 network_namespace=NAMESPACE,
+                restart_on_failure=True,
             ),
         ]
         result.append(Component(
@@ -162,6 +166,7 @@ class SystemdComponents:
                  "--storage-token-file", str(viewer_workspace / "storage.token"),
                  "--port", "15174", "--no-browser"),
                 self.state / "pcap-viewer.log",
+                component_environment(self.lab, "pcap-viewer"),
             ))
         result.extend([
                 Component(
@@ -187,6 +192,7 @@ class SystemdComponents:
                 (socat, f"TCP4-LISTEN:{port},bind={self.expose_address},reuseaddr,fork",
                  f"TCP4:{NS_ADDR}:{port}"),
                 self.state / f"expose-{name}.log",
+                restart_on_failure=True,
             ))
         result.append(Component(
             "e2e-probe",
@@ -266,10 +272,12 @@ class SystemdComponents:
             f"--unit={unit}", f"--slice={self.slice_name}",
             "--property=KillMode=control-group",
             "--property=TimeoutStopSec=8s",
-            "--property=Restart=no",
+            f"--property=Restart={'on-failure' if component.restart_on_failure else 'no'}",
             f"--property=StandardOutput=append:{component.log}",
             f"--property=StandardError=append:{component.log}",
         ]
+        if component.restart_on_failure:
+            command.append("--property=RestartSec=500ms")
         if component.network_namespace:
             command.append(f"--property=NetworkNamespacePath=/run/netns/{component.network_namespace}")
         for value in component.environment:
@@ -370,6 +378,20 @@ class SystemdComponents:
             failed = ", ".join(url for url, _, _ in pending)
             self.down()
             raise RuntimeError(f"Komponenty nenaběhly: {failed}")
+        # The HTTP services above can be healthy even if a short-lived port
+        # collision killed one of the socat exposure units during startup.
+        # The forwarders restart on failure; require the user-facing CLI port
+        # to become reachable before declaring the complete lab ready.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                import socket
+                with socket.create_connection(("127.0.0.1", 55000), timeout=0.5):
+                    return
+            except OSError:
+                time.sleep(0.15)
+        self.down()
+        raise RuntimeError("Komponenty nenaběhly: Smithproxy CLI 127.0.0.1:55000")
 
     def _wait_storage_ready(self) -> None:
         token = (self.state / "pcap-viewer/storage.token").read_text(encoding="ascii").strip()

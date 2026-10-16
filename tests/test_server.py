@@ -1,11 +1,16 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from saslik.server import CliSession, app_launch_command, open_frontend
+from saslik.server import CliSession, Handler, app_launch_command, open_frontend
 
 
 class DummySocket:
     pass
+
+
+class BrokenWriter:
+    def write(self, _data):
+        raise BrokenPipeError
 
 
 class CliSessionTests(unittest.TestCase):
@@ -20,6 +25,17 @@ class CliSessionTests(unittest.TestCase):
         second = session.decode(b"\xfb\x03prompt")
         self.assertEqual(b"banner", first)
         self.assertEqual(b"prompt", second)
+
+
+class ResponseTests(unittest.TestCase):
+    def test_json_ignores_browser_disconnect_during_write(self):
+        handler = object.__new__(Handler)
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.wfile = BrokenWriter()
+
+        handler._json({"data": "", "closed": False})
 
 
 class FrontendTests(unittest.TestCase):

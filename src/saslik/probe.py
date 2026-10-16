@@ -93,6 +93,27 @@ def curl_probe(url: str, name: str, address: str, *, insecure: bool = False) -> 
     return {"state": "down", "detail": detail[:100], "latency_ms": elapsed}
 
 
+def proxy_probe(url: str, proxy: str, label: str, *, insecure: bool = False) -> dict[str, object]:
+    started = time.perf_counter()
+    command = ["curl", "-4", "--silent", "--show-error", "--output", "/dev/null",
+               "--max-time", "7", "--proxy", proxy, "--write-out", "%{http_code}"]
+    if insecure:
+        command.append("--insecure")
+    command.append(url)
+    try:
+        result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=9)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"state": "down", "detail": str(exc)[:100],
+                "latency_ms": round((time.perf_counter() - started) * 1000)}
+    elapsed = round((time.perf_counter() - started) * 1000)
+    code = result.stdout.strip()
+    if result.returncode == 0 and code.isdigit() and 200 <= int(code) < 400:
+        return {"state": "ok", "detail": f"{label} · HTTP {code}", "latency_ms": elapsed}
+    detail = result.stderr.strip() or f"curl={result.returncode}, HTTP {code or '—'}"
+    return {"state": "down", "detail": detail[:100], "latency_ms": elapsed}
+
+
 def _certificate_name(path: Path, field: str) -> str:
     result = subprocess.run(
         ["openssl", "x509", "-in", str(path), "-noout", f"-{field}", "-nameopt", "RFC2253"],
@@ -133,15 +154,22 @@ def run_once(name: str, resolver: str, ca_certificate: Path) -> dict[str, object
         address = addresses[0]
         http = curl_probe(f"http://{name}/", name, address)
         tls = curl_probe(f"https://{name}/", name, address, insecure=True)
+        http_connect = proxy_probe(f"https://{name}/", "http://10.254.78.1:33128",
+                                   "CONNECT", insecure=True)
+        socks = proxy_probe(f"https://{name}/", "socks5h://10.254.78.1:1080",
+                            "SOCKS5", insecure=True)
         issuer = tls_issuer(name, address, ca_certificate) if tls["state"] == "ok" else {
             "state": "down", "detail": "TLS spojení neprošlo", "intercepted": False}
     else:
         dependency = {"state": "down", "detail": "čeká na funkční DNS"}
         http = dependency.copy()
         tls = dependency.copy()
+        http_connect = dependency.copy()
+        socks = dependency.copy()
         issuer = dependency.copy() | {"intercepted": False}
     return {"sampled_at": time.time(), "target": name, "resolver": resolver,
-            "checks": {"dns": dns, "http": http, "tls": tls, "issuer": issuer}}
+            "checks": {"dns": dns, "http": http, "tls": tls,
+                       "http_connect": http_connect, "socks": socks, "issuer": issuer}}
 
 
 def write_atomic(path: Path, value: dict[str, object]) -> None:
