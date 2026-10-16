@@ -116,15 +116,74 @@ the UI, so the same page shows loopback links locally and routable links to a
 remote client. This mode has no UI authentication yet; protect it with a host
 firewall and use it only on a trusted network.
 
+## Appliance image pipeline
+
+The canonical appliance artifact is a raw disk image. Hypervisor-specific
+images are exports of that one disk, so packaging never rebuilds or mutates the
+guest OS:
+
+```text
+OS provisioner -> dist/saslik-amd64.raw
+                         |-- saslik-amd64.qcow2  (KVM/QEMU)
+                         |-- saslik-amd64.vdi    (VirtualBox)
+                         `-- saslik-amd64.ova    (portable OVF + VMDK)
+```
+
+The provisioner first creates an inspectable Ubuntu Server 26.04 LTS
+(`resolute`) root filesystem. It installs the kernel, systemd, QEMU guest
+support, networking tools, the complete Smithproxy/Spider/Sift build toolchain
+and Saslik itself under `/opt/saslik`. It deliberately does not enable a remote
+Saslik controller yet: authentication, restricted privileges and appliance
+networking are one subsequent provisioning stage.
+
+```bash
+sudo apt install debootstrap
+make appliance-rootfs
+# inspect build/appliance/rootfs before it is packed into a disk
+
+# Create the canonical 16 GiB sparse disk (GPT, BIOS + UEFI):
+make appliance-raw
+
+# Before the controller is enabled, test the OS boot marker:
+SASLIK_QEMU_EXPECT=boot make test-appliance \
+  APPLIANCE_IMAGE=dist/saslik-amd64.raw
+```
+
+The image uses one virtual NIC with DHCP for its ordinary address and default
+route, while retaining `198.18.18.1/24` as the stable routed appliance address.
+The network configuration never replaces the DHCP lease or its gateway.
+
+The OS provisioning recipe is intentionally a separate build stage. Until it
+is added, normalize any bootable image produced by the provisioner into the
+canonical raw artifact and export it:
+
+```bash
+make appliance-raw APPLIANCE_RAW_SOURCE=build/provisioned.img
+make appliance-formats
+
+# Individual exports are also available:
+make appliance-qcow2
+make appliance-vdi
+make appliance-vmdk
+make appliance-ova
+```
+
+`qemu-img convert` detects the source format, while all exports explicitly use
+raw input. Replacing the raw file is therefore the only operation that changes
+the appliance contents.
+
 ## QEMU appliance smoke test
 
-The appliance test always boots a disposable QCOW2 overlay. The base image is
-never modified. QEMU user networking gives the only guest a deterministic
+The appliance test detects a raw or QCOW2 base image and always boots a
+disposable QCOW2 overlay. The base image is never modified. QEMU user
+networking gives the only guest a deterministic
 `10.77.0.2` lease and exposes stable host endpoints without creating TAP
 interfaces or changing host routes:
 
 ```bash
 make test-appliance APPLIANCE_IMAGE=dist/saslik-amd64.qcow2
+# or test the canonical intermediate directly:
+make test-appliance APPLIANCE_IMAGE=dist/saslik-amd64.raw
 # guest UI: 10.77.0.2:8765
 # host UI:  http://127.0.0.1:18765/
 # host SSH: 127.0.0.1:12222

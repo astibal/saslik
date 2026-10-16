@@ -13,6 +13,7 @@ timeout_seconds=${SASLIK_QEMU_TIMEOUT:-180}
 memory=${SASLIK_QEMU_MEMORY:-4096}
 cpus=${SASLIK_QEMU_CPUS:-4}
 artifacts=${SASLIK_QEMU_ARTIFACTS:-artifacts/qemu-smoke}
+expect=${SASLIK_QEMU_EXPECT:-api}
 
 fail() {
     printf 'saslik-qemu-test: %s\n' "$*" >&2
@@ -49,7 +50,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 base_image=$(realpath "$image")
-qemu-img create -q -f qcow2 -F qcow2 -b "$base_image" "$overlay"
+base_format=$(qemu-img info --output=json "$base_image" | python3 -c 'import json,sys; print(json.load(sys.stdin)["format"])')
+qemu-img create -q -f qcow2 -F "$base_format" -b "$base_image" "$overlay"
 : >"$serial_log"
 : >"$qemu_log"
 
@@ -86,11 +88,15 @@ qemu-system-x86_64 \
 deadline=$((SECONDS + timeout_seconds))
 status_url="http://127.0.0.1:$host_web_port/api/status"
 while (( SECONDS < deadline )); do
-    if response=$(curl --silent --show-error --fail --max-time 2 "$status_url" 2>/dev/null); then
-        if printf '%s' "$response" | grep -q '"instance"'; then
-            printf 'OK: Saslik odpovídá na %s (guest %s)\n' "$status_url" "$guest_ip"
-            exit 0
-        fi
+    if [[ $expect == boot ]] && grep -q 'SASLIK_APPLIANCE_READY' "$serial_log"; then
+        printf 'OK: Ubuntu appliance dokončila boot (guest %s)\n' "$guest_ip"
+        exit 0
+    fi
+    if [[ $expect == api ]] && \
+       response=$(curl --silent --show-error --fail --max-time 2 "$status_url" 2>/dev/null) && \
+       printf '%s' "$response" | grep -q '"instance"'; then
+        printf 'OK: Saslik odpovídá na %s (guest %s)\n' "$status_url" "$guest_ip"
+        exit 0
     fi
     if [[ -s $pidfile ]] && ! kill -0 "$(<"$pidfile")" 2>/dev/null; then
         printf '%s\n' 'QEMU skončilo před dokončením testu.' >&2
