@@ -14,6 +14,21 @@ from typing import Callable
 
 from .components import SystemdComponents
 from .health import collect as collect_health
+
+
+def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False) -> tuple[str, list[str]]:
+    required = ["smithproxy", "spider", "sift"]
+    if viewer_enabled:
+        required.extend(("pcap-storage", "pcap-viewer"))
+    states = {name: str(services.get(name, {}).get("state", "stopped")) for name in required}
+    if all(state == "stopped" for state in states.values()):
+        return "stopped", []
+    issues = [name for name, state in states.items() if state != "running"]
+    if not issues:
+        return "running", []
+    if any(states[name] == "starting" for name in issues):
+        return "recovering", issues
+    return "degraded", issues
 from .identity import active_name, list_identities
 
 
@@ -122,6 +137,10 @@ class LabRunner:
             endpoints["ca_download"] = "/api/ca"
         result["endpoints"] = endpoints
         result["services"] = self._service_status()
+        result["runtime_state"], result["runtime_issues"] = runtime_state(
+            result["services"],
+            viewer_enabled=(self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file(),
+        )
         result["health"] = self._health_status()
         return result
 
@@ -219,6 +238,13 @@ class LabRunner:
                 commands.extend([
                     workspace + ["sync", str(self.lab), "--ref", branch],
                     workspace + ["build", str(self.lab), "--ref", branch],
+                ])
+            else:
+                # Binary bundles intentionally cover the compiled dataplane,
+                # not the independently released Python viewer.
+                commands.extend([
+                    workspace + ["viewer-sync", str(self.lab)],
+                    workspace + ["viewer-install", str(self.lab)],
                 ])
             commands.extend([
                 workspace + ["init", str(self.lab), "--ref", branch, "--template", template,

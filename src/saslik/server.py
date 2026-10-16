@@ -30,6 +30,7 @@ from .instance import Instance, remember_instance
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 from .settings import provision_settings, public_settings
+from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
 
 
 APP_BROWSERS = (
@@ -203,7 +204,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/workspace/settings":
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
-            return self._json({"settings": public_settings(lab)})
+            return self._json({"settings": public_settings(lab),
+                               "crash_reports": len(crash_reports(lab))})
+        if path == "/api/crashes/files":
+            return self._crash_files(parse_qs(parsed.query).get("workspace", [""])[0])
         if path == "/api/ca":
             query = parse_qs(parsed.query)
             return self._ca(query.get("identity", [""])[0], query.get("workspace", [""])[0])
@@ -305,7 +309,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/binary/clear":
             return self._binary_clear()
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
-                        "/api/workspace/action", "/api/workspace/settings"}:
+                        "/api/workspace/action", "/api/workspace/settings",
+                        "/api/crashes/clear"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -336,6 +341,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Settings musí být objekt.")
                 provision_settings(lab, settings)
                 return self._json({"ok": True, "settings": public_settings(lab)})
+            if path == "/api/crashes/clear":
+                lab, _ = self._workspace_target(str(body.get("workspace", "")))
+                return self._json({"ok": True, "removed": clear_reports(lab)})
             if path == "/api/action" and str(body.get("action", "")) == "stop":
                 if self.server.guardian_stop():
                     return self._json({"job_id": 0}, HTTPStatus.ACCEPTED)
@@ -368,6 +376,35 @@ class Handler(BaseHTTPRequestHandler):
                 "running": running,
             })
         return {"workspaces": items, "selected": self.server.runner.instance}
+
+    def _crash_files(self, workspace: str) -> None:
+        try:
+            lab, instance = self._workspace_target(workspace)
+            handle = tempfile.NamedTemporaryFile(prefix="saslik-crashes-", suffix=".tar.gz",
+                                                 delete=False)
+            path = Path(handle.name)
+            handle.close()
+            count = save_crash_bundle(lab, path)
+            if not count:
+                path.unlink(missing_ok=True)
+                return self._json({"error": "Workspace nemá žádné crash reporty."},
+                                  HTTPStatus.NOT_FOUND)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="saslik-{instance}-crashes.tar.gz"')
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            if "path" in locals():
+                path.unlink(missing_ok=True)
 
     def _workspace_action(self, operation: str, workspace: str, new_name: str) -> None:
         instance = Instance.load(workspace)

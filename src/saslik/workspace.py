@@ -12,6 +12,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+from .settings import setting_value
+
 
 REPOSITORIES = {
     "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
@@ -66,32 +68,23 @@ def sync(lab: Path, smithproxy_ref: str) -> None:
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
-    viewer_repo = os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
-                                 REPOSITORIES["capture-zone-viewer"])
-    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF", "main")
     _ensure_checkout(sources / "smithproxy-spider", spider_repo)
     _ensure_checkout(sources / "sift", sift_repo)
     _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref)
-    _sync_checkout(sources / "capture-zone-viewer", viewer_repo, viewer_ref)
+    sync_viewer(lab)
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "source-ref").write_text(smithproxy_ref + "\n", encoding="utf-8")
 
 
-def build(lab: Path) -> None:
-    jobs = f"-j{os.cpu_count() or 1}"
-    projects = [
-        (lab / "src/smithproxy", lab / "build/smithproxy", ["-DBUILD_TESTING=OFF"], "smithproxy"),
-        (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
-        (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
-    ]
-    for source, destination, options, target in projects:
-        _run(["cmake", "-S", str(source), "-B", str(destination),
-              "-DCMAKE_BUILD_TYPE=Release", *options])
-        command = ["cmake", "--build", str(destination), jobs]
-        if target:
-            command.extend(["--target", target])
-        _run(command)
+def sync_viewer(lab: Path) -> None:
+    viewer_repo = os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
+                                 REPOSITORIES["capture-zone-viewer"])
+    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF", "main")
+    _sync_checkout(lab / "src/capture-zone-viewer", viewer_repo, viewer_ref)
+
+
+def install_viewer(lab: Path) -> None:
     viewer_source = lab / "src/capture-zone-viewer"
     viewer_venv = lab / "runtime/pcap-viewer-venv"
     if not (viewer_source / "pyproject.toml").is_file():
@@ -100,6 +93,24 @@ def build(lab: Path) -> None:
         _run([sys.executable, "-m", "venv", str(viewer_venv)])
     _run([str(viewer_venv / "bin/python"), "-m", "pip", "install", "--upgrade",
           str(viewer_source)])
+
+
+def build(lab: Path) -> None:
+    jobs = f"-j{os.cpu_count() or 1}"
+    build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
+    projects = [
+        (lab / "src/smithproxy", lab / "build/smithproxy", ["-DBUILD_TESTING=OFF"], "smithproxy"),
+        (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
+        (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
+    ]
+    for source, destination, options, target in projects:
+        _run(["cmake", "-S", str(source), "-B", str(destination),
+              f"-DCMAKE_BUILD_TYPE={build_type}", *options])
+        command = ["cmake", "--build", str(destination), jobs]
+        if target:
+            command.extend(["--target", target])
+        _run(command)
+    install_viewer(lab)
 
 
 def save_binary_bundle(lab: Path, destination: Path) -> None:
@@ -317,7 +328,8 @@ def _create_config(lab: Path, api_key: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-workspace")
-    parser.add_argument("action", choices=("sync", "build", "init", "bundle-save", "bundle-load", "bundle-clear"))
+    parser.add_argument("action", choices=("sync", "build", "viewer-sync", "viewer-install",
+                                           "init", "bundle-save", "bundle-load", "bundle-clear"))
     parser.add_argument("lab", type=Path)
     parser.add_argument("--ref", default="master")
     parser.add_argument("--template", choices=("spider-sift", "spider", "proxy"),
@@ -331,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
             sync(args.lab, args.ref)
         elif args.action == "build":
             build(args.lab)
+        elif args.action == "viewer-sync":
+            sync_viewer(args.lab)
+        elif args.action == "viewer-install":
+            install_viewer(args.lab)
         elif args.action == "init":
             created = initialize_state(args.lab, args.template,
                                        ca_cert=args.ca_cert, ca_key=args.ca_key)

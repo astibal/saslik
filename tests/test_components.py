@@ -25,6 +25,22 @@ class ComponentTests(unittest.TestCase):
             manager = SystemdComponents(Path(directory), "lab1")
         self.assertFalse(hasattr(manager, "profile"))
 
+    def test_smithproxy_restarts_after_unexpected_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            (state / "state.env").write_text(
+                "SMITHPROXY_API_URL=https://10.254.77.2:55580\n"
+                "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n"
+                "SMITHPROXY_API_KEY=key\nSPIDER_TOKEN=token\n",
+                encoding="utf-8",
+            )
+            smithproxy = next(component for component in
+                              SystemdComponents(lab, "lab1").components()
+                              if component.name == "smithproxy")
+        self.assertTrue(smithproxy.restart_on_failure)
+
     def test_remote_mode_exposes_forwarders_on_all_ipv4_addresses(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)
@@ -65,6 +81,12 @@ class ComponentTests(unittest.TestCase):
         self.assertIn(str(state / "pcap-viewer/storage.token"), component.command)
         self.assertIn("--storage-url", component.command)
         self.assertIn("http://127.0.0.1:15175", component.command)
+        self.assertIn("--capacity-profile", component.command)
+        self.assertEqual("desktop", component.command[
+            component.command.index("--capacity-profile") + 1])
+        self.assertIn("--theme-fixed", component.command)
+        self.assertEqual("saslik", component.command[
+            component.command.index("--theme-fixed") + 1])
         self.assertIn("15174", component.command)
         self.assertIn("--no-browser", component.command)
         self.assertIn(str(state), storage.command)
@@ -118,6 +140,18 @@ class ComponentTests(unittest.TestCase):
         command = run.call_args_list[-1].args[0]
         self.assertIn("--property=Restart=on-failure", command)
         self.assertIn("--property=RestartSec=500ms", command)
+
+    @patch("saslik.components._run")
+    def test_crash_diagnostics_are_attached_to_managed_components(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SystemdComponents(Path(directory), "lab1")
+            manager._start_component(Component(
+                "smithproxy", ("/bin/false",), Path(directory) / "smithproxy.log",
+            ))
+        command = run.call_args_list[-1].args[0]
+        self.assertIn("--property=LimitCORE=infinity", command)
+        self.assertTrue(any(value.startswith("--property=ExecStopPost=")
+                            and "saslik.crash collect" in value for value in command))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from saslik.settings import component_environment, provision_settings, public_settings, update_settings
+from saslik.settings import (component_environment, component_restart_on_failure,
+                             provision_settings, public_settings, setting_value,
+                             update_settings)
 
 
 class WorkspaceSettingsTests(unittest.TestCase):
@@ -45,6 +47,21 @@ class WorkspaceSettingsTests(unittest.TestCase):
                 provision_settings(lab, {"ipinfo_token": "second"})
             self.assertEqual(("IPINFO_TOKEN=first",),
                              component_environment(lab, "pcap-viewer"))
+
+    def test_component_restart_defaults_on_and_is_workspace_configurable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            self.assertTrue(component_restart_on_failure(lab, "smithproxy"))
+            update_settings(lab, {"restart_smithproxy": False})
+            self.assertFalse(component_restart_on_failure(lab, "smithproxy"))
+            self.assertFalse(public_settings(lab)["restart_smithproxy"]["value"])
+
+    def test_debug_and_crash_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            self.assertFalse(setting_value(lab, "debug_build"))
+            self.assertTrue(setting_value(lab, "collect_coredumps"))
+            self.assertTrue(setting_value(lab, "collect_backtraces"))
 
 
 if __name__ == "__main__":

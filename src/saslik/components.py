@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import component_environment
+from .settings import component_environment, component_restart_on_failure, setting_value
 
 
 NAMESPACE = "sxp-test"
@@ -138,6 +138,7 @@ class SystemdComponents:
                 self.state / "smithproxy.log",
                 (f"SMITHPROXY_PID_FILE={self.state / 'service.pid'}",),
                 NAMESPACE,
+                restart_on_failure=component_restart_on_failure(self.lab, "smithproxy"),
             ),
             Component(
                 "cli-forward",
@@ -151,6 +152,7 @@ class SystemdComponents:
         result.append(Component(
             "sift", (str(sift), "--bind", "0.0.0.0", "--port", "18081"),
             self.state / "sift.log",
+            restart_on_failure=component_restart_on_failure(self.lab, "sift"),
         ))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
@@ -159,14 +161,17 @@ class SystemdComponents:
                 (str(pcap_storage), "--workspace", str(viewer_workspace),
                  "--watch-root", str(self.state), "--port", "15175"),
                 self.state / "pcap-storage.log",
+                restart_on_failure=component_restart_on_failure(self.lab, "pcap-storage"),
             ))
             result.append(Component(
                 "pcap-viewer",
                 (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
                  "--storage-token-file", str(viewer_workspace / "storage.token"),
+                 "--capacity-profile", "desktop", "--theme-fixed", "saslik",
                  "--port", "15174", "--no-browser"),
                 self.state / "pcap-viewer.log",
                 component_environment(self.lab, "pcap-viewer"),
+                restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
         result.extend([
                 Component(
@@ -178,6 +183,7 @@ class SystemdComponents:
                     self.state / "spider.log",
                     (f"SPIDER_SMITHPROXY_KEY={values['SMITHPROXY_API_KEY']}",
                      f"SPIDER_TOKEN={values['SPIDER_TOKEN']}"),
+                    restart_on_failure=component_restart_on_failure(self.lab, "spider"),
                 ),
                 Component(
                     "frontend",
@@ -278,6 +284,14 @@ class SystemdComponents:
         ]
         if component.restart_on_failure:
             command.append("--property=RestartSec=500ms")
+        crash_components = {"smithproxy", "spider", "sift", "pcap-viewer", "pcap-storage"}
+        if component.name in crash_components:
+            collect_core = setting_value(self.lab, "collect_coredumps") is True
+            command.append(f"--property=LimitCORE={'infinity' if collect_core else '0'}")
+            if collect_core and setting_value(self.lab, "collect_backtraces") is True:
+                hook = (f"{sys.executable} -m saslik.crash collect --lab {self.lab} "
+                        f"--component {component.name} --unit {unit}")
+                command.append(f"--property=ExecStopPost={hook}")
         if component.network_namespace:
             command.append(f"--property=NetworkNamespacePath=/run/netns/{component.network_namespace}")
         for value in component.environment:
