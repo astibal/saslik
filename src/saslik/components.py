@@ -430,7 +430,6 @@ class SystemdComponents:
         print("Spider:")
         print("  UI:      http://127.0.0.1:15173/")
         print("  Backend: http://127.0.0.1:18080")
-        print(f"  Token:   {values['SPIDER_TOKEN']}")
         print("  Sift:    http://127.0.0.1:18081/api/status")
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             print("PCAP Viewer: http://127.0.0.1:15174/")

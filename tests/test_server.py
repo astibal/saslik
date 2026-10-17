@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from saslik.server import CliSession, Handler, app_launch_command, open_frontend
+from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
+                           app_launch_command, open_frontend)
 
 
 class DummySocket:
@@ -25,6 +26,23 @@ class CliSessionTests(unittest.TestCase):
         second = session.decode(b"\xfb\x03prompt")
         self.assertEqual(b"banner", first)
         self.assertEqual(b"prompt", second)
+
+
+class SpiderBootstrapTests(unittest.TestCase):
+    def test_grant_is_origin_bound_and_single_use(self):
+        store = SpiderBootstrapStore(lifetime=60)
+        code = store.issue("http://127.0.0.1:18080", "secret",
+                           "http://127.0.0.1:15173", now=10)
+        self.assertIsNone(store.redeem(code, "http://evil.example", now=11))
+        grant = store.redeem(code, "http://127.0.0.1:15173", now=11)
+        self.assertIsNotNone(grant)
+        self.assertEqual("secret", grant.token)
+        self.assertIsNone(store.redeem(code, "http://127.0.0.1:15173", now=12))
+
+    def test_expired_grant_cannot_be_redeemed(self):
+        store = SpiderBootstrapStore(lifetime=5)
+        code = store.issue("backend", "secret", "http://spider", now=10)
+        self.assertIsNone(store.redeem(code, "http://spider", now=15))
 
 
 class ResponseTests(unittest.TestCase):

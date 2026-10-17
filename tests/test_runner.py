@@ -49,7 +49,7 @@ class RunnerTests(unittest.TestCase):
         ])
         self.assertEqual("http://helmut:15173/", result["spider_ui"])
         self.assertEqual("http://helmut:15173/test-ca.pem", result["ca_download"])
-        self.assertEqual("secret", result["spider_token"])
+        self.assertNotIn("spider_token", result)
         self.assertEqual("http://10.254.77.2:33128", result["proxy"])
         self.assertEqual("http://127.0.0.1:15174/", result["pcap_viewer"])
 

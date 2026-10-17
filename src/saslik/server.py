@@ -82,6 +82,49 @@ class CliSession:
         return bytes(output)
 
 
+@dataclass(frozen=True)
+class SpiderBootstrapGrant:
+    backend: str
+    token: str
+    origin: str
+    expires_at: float
+
+
+class SpiderBootstrapStore:
+    """Short-lived, single-use credentials for opening the Spider UI."""
+
+    def __init__(self, lifetime: float = 60.0) -> None:
+        self.lifetime = lifetime
+        self._grants: dict[str, SpiderBootstrapGrant] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, backend: str, token: str, origin: str,
+              now: float | None = None) -> str:
+        current = time.monotonic() if now is None else now
+        code = secrets.token_urlsafe(32)
+        with self._lock:
+            self._prune(current)
+            self._grants[code] = SpiderBootstrapGrant(
+                backend, token, origin, current + self.lifetime)
+        return code
+
+    def redeem(self, code: str, origin: str,
+               now: float | None = None) -> SpiderBootstrapGrant | None:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            self._prune(current)
+            grant = self._grants.get(code)
+            if grant is None or grant.origin != origin:
+                return None
+            return self._grants.pop(code)
+
+    def _prune(self, now: float) -> None:
+        expired = [code for code, grant in self._grants.items()
+                   if grant.expires_at <= now]
+        for code in expired:
+            self._grants.pop(code, None)
+
+
 def open_frontend(url: str, mode: str = "app") -> str:
     if mode == "none":
         return "none"
@@ -115,6 +158,7 @@ class SaslikServer(ThreadingHTTPServer):
         self.csrf = secrets.token_urlsafe(24)
         self.cli_sessions: dict[str, CliSession] = {}
         self.cli_lock = threading.Lock()
+        self.spider_bootstraps = SpiderBootstrapStore()
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -229,6 +273,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._cli_read(parse_qs(urlparse(self.path).query).get("session", [""])[0])
         self._asset(path)
 
+    def do_OPTIONS(self) -> None:
+        if urlparse(self.path).path != "/api/spider/bootstrap/redeem":
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        origin = self.headers.get("Origin", "")
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Max-Age", "60")
+        self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _workspace_target(self, workspace: str) -> tuple[Path, str]:
         if not workspace:
             return self.server.runner.lab, self.server.runner.instance
@@ -303,16 +360,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/api/spider/bootstrap/redeem":
+            return self._spider_bootstrap_redeem()
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
-        path = urlparse(self.path).path
         if path == "/api/binary/load":
             return self._binary_load()
         if path == "/api/binary/clear":
             return self._binary_clear()
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
                         "/api/workspace/action", "/api/workspace/settings",
-                        "/api/crashes/clear", "/api/crashes/diagnose"}:
+                        "/api/crashes/clear", "/api/crashes/diagnose",
+                        "/api/spider/bootstrap"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -322,6 +382,8 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/spider/bootstrap":
+                return self._spider_bootstrap_issue(str(body.get("origin", "")))
             if path == "/api/cli":
                 return self._cli_write(body)
             if path == "/api/ca/action":
@@ -371,6 +433,46 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"job_id": job_id}, HTTPStatus.ACCEPTED)
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _spider_bootstrap_issue(self, origin: str) -> None:
+        parsed_origin = urlparse(origin)
+        if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.netloc:
+            raise ValueError("Spider origin není platný.")
+        normalized_origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
+        values = {}
+        for line in (self.server.runner.lab / "state/state.env").read_text(
+                encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+        token = values.get("SPIDER_TOKEN", "")
+        if not token:
+            raise RuntimeError("Workspace nemá Spider token.")
+        backend = self.server.runner.snapshot().get("endpoints", {}).get(
+            "spider_backend", "http://127.0.0.1:18080")
+        code = self.server.spider_bootstraps.issue(
+            str(backend), token, normalized_origin)
+        self._json({"code": code, "expires_in": int(self.server.spider_bootstraps.lifetime)})
+
+    def _spider_bootstrap_redeem(self) -> None:
+        origin = self.headers.get("Origin", "")
+        try:
+            declared = int(self.headers.get("Content-Length", "0"))
+            if declared > 4096:
+                return self._json({"error": "Požadavek je příliš velký."},
+                                  HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                  cors_origin=origin)
+            body = json.loads(self.rfile.read(declared) or b"{}")
+            grant = self.server.spider_bootstraps.redeem(
+                str(body.get("code", "")), origin)
+            if grant is None:
+                return self._json({"error": "Bootstrap kód je neplatný nebo vypršel."},
+                                  HTTPStatus.UNAUTHORIZED, cors_origin=origin)
+            self._json({"backend": grant.backend, "token": grant.token},
+                       cors_origin=grant.origin)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST,
+                       cors_origin=origin)
 
     def _workspaces(self) -> dict:
         items = []
@@ -655,13 +757,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _json(self, value: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _json(self, value: dict, status: HTTPStatus = HTTPStatus.OK,
+              cors_origin: str = "") -> None:
         data = json.dumps(value).encode()
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            if cors_origin:
+                self.send_header("Access-Control-Allow-Origin", cors_origin)
+                self.send_header("Vary", "Origin")
             self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):

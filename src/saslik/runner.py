@@ -314,7 +314,7 @@ class LabRunner:
 def parse_endpoints(lines) -> dict[str, str]:
     result: dict[str, str] = {}
     labels = {
-        "UI": "spider_ui", "Backend": "spider_backend", "Token": "spider_token",
+        "UI": "spider_ui", "Backend": "spider_backend",
         "Sift": "sift", "API": "smithproxy_api", "HTTP CONNECT": "proxy",
         "CLI": "cli", "CA": "ca", "State": "state", "Logs": "logs",
         "PCAP Viewer": "pcap_viewer",
