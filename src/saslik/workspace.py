@@ -23,6 +23,44 @@ REPOSITORIES = {
 }
 
 
+def source_changes(lab: Path) -> list[str]:
+    """Return managed source checkouts with local Git changes."""
+    sources = lab.resolve() / "src"
+    changed = []
+    for name in REPOSITORIES:
+        path = sources / name
+        if not path.exists():
+            continue
+        if not (path / ".git").exists():
+            raise RuntimeError(f"Saslik odmítá kontrolovat cizí adresář {path}.")
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+        if status:
+            changed.append(name)
+    return changed
+
+
+def discard_source_changes(lab: Path) -> list[str]:
+    """Discard tracked and untracked changes only in managed source trees."""
+    sources = lab.resolve() / "src"
+    changed = source_changes(lab)
+    for name in changed:
+        path = sources / name
+        # Submodules have their own worktrees. Clean them before forcing the
+        # superproject's recorded submodule revisions back into place.
+        _run(["git", "-C", str(path), "submodule", "foreach", "--recursive",
+              "git reset --hard HEAD"])
+        _run(["git", "-C", str(path), "submodule", "foreach", "--recursive",
+              "git clean -fd"])
+        _run(["git", "-C", str(path), "reset", "--hard", "HEAD"])
+        _run(["git", "-C", str(path), "clean", "-fd"])
+        _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive",
+              "--force"])
+    return changed
+
+
 def _run(command: list[str], *, quiet: bool = False) -> None:
     environment = os.environ.copy()
     if command and command[0] == "git":
@@ -44,7 +82,10 @@ def _sync_checkout(path: Path, repository: str, ref: str) -> None:
         check=True, text=True, stdout=subprocess.PIPE,
     ).stdout.strip()
     if changed:
-        raise RuntimeError(f"Zdrojový strom má lokální změny: {path}")
+        raise RuntimeError(
+            f"Zdrojový strom má lokální změny: {path}. "
+            "Můžeš je zahodit v kartě Logy."
+        )
     # Managed checkouts follow the configured repository.  This also migrates
     # older HTTPS viewer checkouts to SSH without deleting local objects.
     _run(["git", "-C", str(path), "remote", "set-url", "origin", repository])
@@ -331,7 +372,8 @@ def _create_config(lab: Path, api_key: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-workspace")
     parser.add_argument("action", choices=("sync", "build", "viewer-sync", "viewer-install",
-                                           "init", "bundle-save", "bundle-load", "bundle-clear"))
+                                           "init", "bundle-save", "bundle-load", "bundle-clear",
+                                           "discard-changes"))
     parser.add_argument("lab", type=Path)
     parser.add_argument("--ref", default="master")
     parser.add_argument("--template", choices=("spider-sift", "spider", "proxy"),
@@ -356,6 +398,9 @@ def main(argv: list[str] | None = None) -> int:
                   else "Persistentní config a CA zachovány beze změny.")
         elif args.action == "bundle-clear":
             (args.lab / "state/binary-bundle.json").unlink(missing_ok=True)
+        elif args.action == "discard-changes":
+            changed = discard_source_changes(args.lab)
+            print("Zahozeny lokální změny: " + (", ".join(changed) if changed else "žádné"))
         elif not args.bundle:
             raise RuntimeError("Chybí cesta k binary bundle.")
         elif args.action == "bundle-save":

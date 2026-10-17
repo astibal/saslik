@@ -2,10 +2,14 @@ import tempfile
 import shutil
 import unittest
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.workspace import _run, initialize_state, load_binary_bundle, save_binary_bundle
+from saslik.workspace import (
+    _run, discard_source_changes, initialize_state, load_binary_bundle,
+    save_binary_bundle, source_changes,
+)
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -16,6 +20,32 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual("0", environment["GIT_TERMINAL_PROMPT"])
         self.assertEqual("ssh -oBatchMode=yes", environment["GIT_SSH_COMMAND"])
         self.assertEqual(os.environ.get("SSH_AUTH_SOCK"), environment.get("SSH_AUTH_SOCK"))
+
+    def test_discard_source_changes_is_limited_to_managed_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory) / "lab"
+            checkout = lab / "src/smithproxy"
+            checkout.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            tracked = checkout / "tracked.txt"
+            tracked.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(checkout), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+            ], check=True)
+            tracked.write_text("changed\n", encoding="utf-8")
+            (checkout / "untracked.txt").write_text("temporary\n", encoding="utf-8")
+            preserved = lab / "state/smithproxy.cfg"
+            preserved.parent.mkdir(parents=True)
+            preserved.write_text("keep\n", encoding="utf-8")
+
+            self.assertEqual(["smithproxy"], source_changes(lab))
+            self.assertEqual(["smithproxy"], discard_source_changes(lab))
+            self.assertEqual([], source_changes(lab))
+            self.assertEqual("original\n", tracked.read_text(encoding="utf-8"))
+            self.assertFalse((checkout / "untracked.txt").exists())
+            self.assertEqual("keep\n", preserved.read_text(encoding="utf-8"))
 
     def test_binary_bundle_round_trip_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:

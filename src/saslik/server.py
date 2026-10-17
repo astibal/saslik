@@ -31,6 +31,7 @@ from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
+from .workspace import source_changes
 
 
 APP_BROWSERS = (
@@ -251,7 +252,8 @@ class Handler(BaseHTTPRequestHandler):
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
             return self._json({"settings": public_settings(lab),
-                               "crash_reports": len(crash_reports(lab))})
+                               "crash_reports": len(crash_reports(lab)),
+                               "source_changes": source_changes(lab)})
         if path == "/api/crashes/files":
             return self._crash_files(parse_qs(parsed.query).get("workspace", [""])[0])
         if path == "/api/ca":
@@ -528,6 +530,22 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.guardian_request("stop", instance):
                 raise RuntimeError("Guardian workspace nezastavil.")
             return self._json({"ok": True, "workspace": workspace})
+        if operation == "discard-source-changes":
+            services = SystemdComponents(instance.data_dir, instance.name,
+                                         self.server.runner.expose_address).status()
+            if self.server.runner.operation_running() or any(
+                    value.get("state") in {"running", "starting"}
+                    for value in services.values()):
+                raise RuntimeError("Lokální změny lze zahodit jen při zastaveném labu.")
+            changed = source_changes(instance.data_dir)
+            command = ["sudo", "-n", sys.executable, "-m", "saslik.workspace",
+                       "discard-changes", str(instance.data_dir)]
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    text=True)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or
+                                   "Zahození lokálních změn selhalo.")
+            return self._json({"ok": True, "workspace": workspace, "discarded": changed})
         any_running = self.server.runner.operation_running()
         for candidate in Instance.discover():
             statuses = SystemdComponents(candidate.data_dir, candidate.name,
