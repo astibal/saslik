@@ -288,10 +288,9 @@ class SystemdComponents:
         if component.name in crash_components:
             collect_core = setting_value(self.lab, "collect_coredumps") is True
             command.append(f"--property=LimitCORE={'infinity' if collect_core else '0'}")
-            if collect_core and setting_value(self.lab, "collect_backtraces") is True:
-                hook = (f"{sys.executable} -m saslik.crash collect --lab {self.lab} "
-                        f"--component {component.name} --unit {unit}")
-                command.append(f"--property=ExecStopPost={hook}")
+            hook = (f"{sys.executable} -m saslik.crash collect --lab {self.lab} "
+                    f"--component {component.name} --unit {unit}")
+            command.append(f"--property=ExecStopPost={hook}")
         if component.network_namespace:
             command.append(f"--property=NetworkNamespacePath=/run/netns/{component.network_namespace}")
         for value in component.environment:

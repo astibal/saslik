@@ -29,7 +29,7 @@ from .ca import install_store, store_status
 from .instance import Instance, remember_instance
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
-from .settings import provision_settings, public_settings
+from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
 
 
@@ -141,7 +141,8 @@ class SaslikServer(ThreadingHTTPServer):
         if not self.guardian_socket.exists():
             raise RuntimeError("Privilegovaný guardian nenaběhl.")
 
-    def guardian_request(self, action: str, instance: Instance | None = None) -> bool:
+    def guardian_request(self, action: str, instance: Instance | None = None,
+                         **options: object) -> bool:
         if not self.guardian_socket.exists():
             return False
         target_lab = instance.data_dir if instance else self.runner.lab
@@ -150,6 +151,7 @@ class SaslikServer(ThreadingHTTPServer):
             "action": action,
             "lab": str(target_lab), "instance": target_name,
             "expose_address": self.runner.expose_address,
+            **options,
         }).encode("utf-8")
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -310,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._binary_clear()
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
                         "/api/workspace/action", "/api/workspace/settings",
-                        "/api/crashes/clear"}:
+                        "/api/crashes/clear", "/api/crashes/diagnose"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -344,13 +346,25 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/crashes/clear":
                 lab, _ = self._workspace_target(str(body.get("workspace", "")))
                 return self._json({"ok": True, "removed": clear_reports(lab)})
+            if path == "/api/crashes/diagnose":
+                workspace = str(body.get("workspace", ""))
+                signal_number = int(body.get("signal", 11))
+                lab, instance_name = self._workspace_target(workspace)
+                instance = Instance.load(instance_name)
+                if signal_number not in {9, 11}:
+                    raise ValueError("Povolené signály jsou pouze 9 a 11.")
+                if not self.server.guardian_request("diagnose-smithproxy", instance,
+                                                    signal=signal_number):
+                    raise RuntimeError("Diagnostické ukončení Smithproxy selhalo.")
+                return self._json({"ok": True})
             if path == "/api/action" and str(body.get("action", "")) == "stop":
                 if self.server.guardian_stop():
                     return self._json({"job_id": 0}, HTTPStatus.ACCEPTED)
             if path == "/api/action" and str(body.get("action", "")) in {"start", "reset"}:
                 self.server.guardian_arm()
             job_id = self.server.runner.start_job(
-                str(body.get("action", "")), str(body.get("branch", "master")),
+                str(body.get("action", "")),
+                str(setting_value(self.server.runner.lab, "ref_smithproxy")),
                 str(body.get("template", "spider-sift")),
                 str(body.get("ca_cert", "")), str(body.get("ca_key", "")),
             )

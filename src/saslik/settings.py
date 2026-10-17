@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -20,6 +21,14 @@ SETTINGS = {
     "debug_build": {"label": "Debug build", "secret": False, "default": False},
     "collect_coredumps": {"label": "Uložit core dump", "secret": False, "default": True},
     "collect_backtraces": {"label": "Vygenerovat backtrace", "secret": False, "default": True},
+    "source_smithproxy": {"label": "Smithproxy source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_smithproxy": {"label": "Smithproxy branch / ref", "secret": False, "default": "master"},
+    "source_spider": {"label": "Spider source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_spider": {"label": "Spider branch / ref", "secret": False, "default": "main"},
+    "source_sift": {"label": "Sift source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_sift": {"label": "Sift branch / ref", "secret": False, "default": "main"},
+    "source_pcap_viewer": {"label": "PCAP Viewer source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "main"},
 }
 
 
@@ -47,7 +56,7 @@ def public_settings(lab: Path) -> dict[str, dict[str, object]]:
             item.update(description=definition.get("description", ""),
                         configured=bool(values.get(key)))
         else:
-            item["value"] = values.get(key, definition.get("default", False)) is True
+            item["value"] = values.get(key, definition.get("default", False))
         result[key] = item
     return result
 
@@ -66,6 +75,18 @@ def update_settings(lab: Path, changes: dict[str, object]) -> None:
                 values[key] = value
             else:
                 values.pop(key, None)
+        elif "choices" in SETTINGS[key]:
+            value = str(raw_value).strip()
+            if value not in SETTINGS[key]["choices"]:
+                raise ValueError(f"Neplatná hodnota nastavení: {key}")
+            values[key] = value
+        elif isinstance(SETTINGS[key].get("default"), str):
+            value = str(raw_value).strip()
+            if not value or len(value) > 200 or any(character in value for character in "\r\n\0"):
+                raise ValueError(f"Neplatná hodnota nastavení: {key}")
+            if key.startswith("ref_") and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", value):
+                raise ValueError(f"Neplatný Git ref: {value}")
+            values[key] = value
         else:
             if type(raw_value) is not bool:
                 raise ValueError(f"Nastavení {SETTINGS[key]['label']} musí být ano/ne.")

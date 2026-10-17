@@ -13,6 +13,7 @@ from .netns_dns import down as dns_down
 from .network import down as network_down
 from .pasta import pasta_down
 from .routing import routing_down
+from .crash import diagnose_smithproxy
 
 
 def cleanup(lab: Path, instance: str, expose_address: str) -> None:
@@ -50,15 +51,21 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                 continue
             connection, _ = listener.accept()
             with connection:
-                payload = json.loads(connection.recv(65536).decode("utf-8"))
-                lab = Path(str(payload["lab"])).resolve()
-                if not lab.is_relative_to(root):
-                    raise RuntimeError("Workspace je mimo Saslik data root.")
-                target = (lab, str(payload["instance"]), str(payload["expose_address"]))
-                last_target = target
-                if payload.get("action") == "stop":
-                    cleanup(*target)
-                connection.sendall(b'{"ok":true}\n')
+                try:
+                    payload = json.loads(connection.recv(65536).decode("utf-8"))
+                    lab = Path(str(payload["lab"])).resolve()
+                    if not lab.is_relative_to(root):
+                        raise RuntimeError("Workspace je mimo Saslik data root.")
+                    target = (lab, str(payload["instance"]), str(payload["expose_address"]))
+                    last_target = target
+                    if payload.get("action") == "stop":
+                        cleanup(*target)
+                    elif payload.get("action") == "diagnose-smithproxy":
+                        diagnose_smithproxy(lab, str(payload["instance"]),
+                                            int(payload.get("signal", 11)))
+                    connection.sendall(b'{"ok":true}\n')
+                except Exception as exc:
+                    connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")
     finally:
         if last_target is not None:
             try:

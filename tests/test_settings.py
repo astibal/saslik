@@ -63,6 +63,17 @@ class WorkspaceSettingsTests(unittest.TestCase):
             self.assertTrue(setting_value(lab, "collect_coredumps"))
             self.assertTrue(setting_value(lab, "collect_backtraces"))
 
+    def test_component_refs_are_strings_and_reject_option_injection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            update_settings(lab, {"ref_smithproxy": "feature/cli-fix",
+                                  "ref_spider": "main"})
+            self.assertEqual("feature/cli-fix", setting_value(lab, "ref_smithproxy"))
+            self.assertEqual("feature/cli-fix",
+                             public_settings(lab)["ref_smithproxy"]["value"])
+            with self.assertRaisesRegex(ValueError, "Git ref"):
+                update_settings(lab, {"ref_smithproxy": "--upload-pack=evil"})
+
 
 if __name__ == "__main__":
     unittest.main()

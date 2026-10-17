@@ -68,8 +68,9 @@ def sync(lab: Path, smithproxy_ref: str) -> None:
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
-    _ensure_checkout(sources / "smithproxy-spider", spider_repo)
-    _ensure_checkout(sources / "sift", sift_repo)
+    _sync_checkout(sources / "smithproxy-spider", spider_repo,
+                   str(setting_value(lab, "ref_spider")))
+    _sync_checkout(sources / "sift", sift_repo, str(setting_value(lab, "ref_sift")))
     _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref)
     sync_viewer(lab)
     state = lab / "state"
@@ -80,7 +81,8 @@ def sync(lab: Path, smithproxy_ref: str) -> None:
 def sync_viewer(lab: Path) -> None:
     viewer_repo = os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
                                  REPOSITORIES["capture-zone-viewer"])
-    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF", "main")
+    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF",
+                                str(setting_value(lab, "ref_pcap_viewer")))
     _sync_checkout(lab / "src/capture-zone-viewer", viewer_repo, viewer_ref)
 
 
