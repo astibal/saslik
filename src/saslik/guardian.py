@@ -19,7 +19,7 @@ from .crash import diagnose_smithproxy
 def cleanup(lab: Path, instance: str, expose_address: str) -> None:
     SystemdComponents(lab, instance, expose_address).down()
     routing_down()
-    pasta_down(lab)
+    pasta_down(lab, instance)
     network_down(lab)
     dns_down(lab)
 

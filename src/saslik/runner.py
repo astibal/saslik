@@ -231,7 +231,7 @@ class LabRunner:
             commands = [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab)],
+                pasta + ["down", str(self.lab), "--instance", self.instance],
                 network + ["down", str(self.lab)],
             ]
             if not (self.lab / "state/binary-bundle.json").is_file():
@@ -255,7 +255,7 @@ class LabRunner:
             ])
             if self.egress == "pasta":
                 commands.append(pasta + ["snapshot", str(self.lab)])
-                commands.append(pasta + ["up", str(self.lab)])
+                commands.append(pasta + ["up", str(self.lab), "--instance", self.instance])
             commands.extend([
                 routing + ["namespace-up", str(self.lab)],
                 components + ["build", *component_args],
@@ -266,7 +266,7 @@ class LabRunner:
             commands = [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab)],
+                pasta + ["down", str(self.lab), "--instance", self.instance],
                 network + ["down", str(self.lab)],
                 identity + ["rotate", str(self.lab), "--fallback", self.instance],
                 network + ["up", str(self.lab)],
@@ -274,7 +274,7 @@ class LabRunner:
             ]
             if self.egress == "pasta":
                 commands.append(pasta + ["snapshot", str(self.lab)])
-                commands.append(pasta + ["up", str(self.lab)])
+                commands.append(pasta + ["up", str(self.lab), "--instance", self.instance])
             commands.extend([
                 routing + ["namespace-up", str(self.lab)],
                 components + ["up", *component_args],
@@ -286,7 +286,7 @@ class LabRunner:
             return [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab)],
+                pasta + ["down", str(self.lab), "--instance", self.instance],
                 network + ["down", str(self.lab)],
                 netns_dns + ["down", str(self.lab)],
             ]

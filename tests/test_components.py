@@ -40,6 +40,9 @@ class ComponentTests(unittest.TestCase):
                               SystemdComponents(lab, "lab1").components()
                               if component.name == "smithproxy")
         self.assertTrue(smithproxy.restart_on_failure)
+        self.assertIn("--no-pidfile", smithproxy.command)
+        self.assertFalse(any(value.startswith("SMITHPROXY_PID_FILE=")
+                             for value in smithproxy.environment))
 
     def test_remote_mode_exposes_forwarders_on_all_ipv4_addresses(self):
         with tempfile.TemporaryDirectory() as directory:

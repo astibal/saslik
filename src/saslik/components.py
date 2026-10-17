@@ -134,10 +134,9 @@ class SystemdComponents:
         result = [
             Component(
                 "smithproxy",
-                (str(smithproxy), "--config-file", str(config), "--diagnose"),
+                (str(smithproxy), "--config-file", str(config), "--diagnose", "--no-pidfile"),
                 self.state / "smithproxy.log",
-                (f"SMITHPROXY_PID_FILE={self.state / 'service.pid'}",),
-                NAMESPACE,
+                network_namespace=NAMESPACE,
                 restart_on_failure=component_restart_on_failure(self.lab, "smithproxy"),
             ),
             Component(

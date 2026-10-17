@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -12,6 +13,14 @@ HOST_IF = "sxp-test0"
 NS_ADDR = "10.254.77.2"
 IP_FORWARD = Path("/proc/sys/net/ipv4/ip_forward")
 PASTA_NETNS = Path("/run/user/0/saslik/sxp-test")
+
+
+def _unit_instance(instance: str) -> str:
+    return "".join(character if character.isalnum() else "-" for character in instance)
+
+
+def unit_name(instance: str) -> str:
+    return f"saslik-pasta-{_unit_instance(instance)}.service"
 
 
 def _run(command: list[str], *, tolerate: bool = False) -> None:
@@ -73,28 +82,46 @@ def _unmount_namespace_reference() -> None:
         raise RuntimeError(f"Nelze uklidit starou pasta namespace reference: {exc}") from exc
 
 
-def pasta_up(lab: Path) -> None:
+def pasta_up(lab: Path, instance: str) -> None:
     binary = shutil.which("pasta")
     if not binary:
         raise RuntimeError("Pasta není nainstalovaná. Na Ubuntu/Debian použij: sudo apt install passt")
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
-    pid_file = state / "pasta.pid"
-    pasta_down(lab)
+    pasta_down(lab, instance)
     namespace = _mount_namespace_reference()
     command = [
-        binary, "--runas", "0", "--netns", str(namespace), "--netns-only", "--config-net",
+        binary, "--foreground", "--runas", "0", "--netns", str(namespace),
+        "--netns-only", "--config-net",
         "--ns-ifname", "saslik-out", "--dns-forward", "169.254.1.1",
         "--tcp-ports", "none", "--udp-ports", "none",
-        "--tcp-ns", "none", "--udp-ns", "none", "--pid", str(pid_file),
+        "--tcp-ns", "none", "--udp-ns", "none",
     ]
     try:
-        _run(command)
+        _run([
+            "systemd-run", "--quiet", "--collect", "--service-type=exec",
+            f"--unit={unit_name(instance)}", "--slice=saslik-egress.slice",
+            "--property=KillMode=control-group", "--property=Restart=on-failure",
+            "--property=RestartSec=500ms",
+            f"--property=StandardOutput=append:{state / 'pasta.log'}",
+            f"--property=StandardError=append:{state / 'pasta.log'}",
+            *command,
+        ])
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            result = subprocess.run(
+                ["ip", "-n", NAMESPACE, "link", "show", "saslik-out"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("Pasta nevytvořila namespace interface saslik-out.")
     except Exception:
+        _run(["systemctl", "stop", unit_name(instance)], tolerate=True)
         _unmount_namespace_reference()
         raise
-    if not pid_file.is_file():
-        raise RuntimeError("Pasta se spustila bez PID souboru.")
 
     # Pasta owns the namespace default route. Keep the ingress veth for host
     # access, but remove the temporary NAT/forwarding installed by the reused
@@ -114,7 +141,11 @@ def pasta_up(lab: Path) -> None:
     (state / "egress").write_text("pasta\n", encoding="ascii")
 
 
-def pasta_down(lab: Path) -> None:
+def pasta_down(lab: Path, instance: str | None = None) -> None:
+    instance = instance or lab.name
+    _run(["systemctl", "stop", unit_name(instance)], tolerate=True)
+    _run(["systemctl", "reset-failed", unit_name(instance)], tolerate=True)
+    # One-way cleanup of pasta processes created before systemd ownership.
     pid_file = lab / "state/pasta.pid"
     if pid_file.is_file():
         try:
@@ -135,13 +166,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-pasta")
     parser.add_argument("action", choices=("snapshot", "up", "down"))
     parser.add_argument("lab", type=Path)
+    parser.add_argument("--instance", default="")
     args = parser.parse_args(argv)
     if args.action == "snapshot":
         snapshot_host(args.lab)
     elif args.action == "up":
-        pasta_up(args.lab)
+        pasta_up(args.lab, args.instance or args.lab.name)
     else:
-        pasta_down(args.lab)
+        pasta_down(args.lab, args.instance or args.lab.name)
     return 0
 
 
