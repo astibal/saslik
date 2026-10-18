@@ -20,6 +20,15 @@ class ComponentTests(unittest.TestCase):
         first = run.call_args_list[0].args[0]
         self.assertEqual(["systemctl", "stop", "saslik-lab1.slice"], first)
 
+    @patch("saslik.components._run")
+    def test_selective_spider_stop_does_not_touch_smithproxy(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            SystemdComponents(Path(directory), "lab1").stop_component("spider")
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(any("saslik-lab1-spider.service" in command for command in commands))
+        self.assertTrue(any("saslik-lab1-frontend.service" in command for command in commands))
+        self.assertFalse(any("smithproxy" in " ".join(command) for command in commands))
+
     def test_runtime_has_no_profile_dimension(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = SystemdComponents(Path(directory), "lab1")

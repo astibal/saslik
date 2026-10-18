@@ -1,0 +1,24 @@
+.component-table-head,
+.component-row {
+    grid-template-columns: minmax(120px, .8fr) 72px minmax(180px, 1.4fr) minmax(130px, .7fr) 105px;
+}
+
+.component-row > button[data-component-update] {
+    height: 30px;
+    padding: 0 9px;
+    border: 1px solid #374047;
+    border-radius: 6px;
+    background: #20262b;
+    color: #d8dad7;
+    font: 8px system-ui, sans-serif;
+}
+
+.component-row > button[data-component-update]:not(:disabled):hover {
+    border-color: var(--hot);
+    color: var(--hot);
+}
+
+@media (max-width: 720px) {
+    .component-row { grid-template-columns: 1fr 70px; }
+    .component-row > button[data-component-update] { justify-self: end; }
+}

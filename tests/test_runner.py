@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.runner import LabRunner, ensure_friendly_data_link, parse_endpoints, runtime_state, validate_ref
+from saslik.runner import Job, LabRunner, ensure_friendly_data_link, parse_endpoints, runtime_state, validate_ref
 
 
 class RunnerTests(unittest.TestCase):
@@ -124,6 +124,46 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(component_commands)
         self.assertTrue(all("--expose-address" in command and "0.0.0.0" in command
                             for command in component_commands))
+
+    def test_spider_update_builds_and_restarts_only_spider_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory), instance="lab1")
+            commands = [" ".join(command) for command in
+                        runner._commands("update-component", "master", component="spider")]
+        self.assertEqual(3, len(commands))
+        self.assertIn("component-sync", commands[0])
+        self.assertIn("--component spider", commands[0])
+        self.assertIn("component-build", commands[1])
+        self.assertIn("restart-component", commands[2])
+        self.assertFalse(any("smithproxy" in command for command in commands))
+
+    def test_viewer_update_stops_pair_before_installing_into_venv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory), instance="lab1")
+            commands = [" ".join(command) for command in
+                        runner._commands("update-component", "master",
+                                         component="pcap-viewer")]
+        stop = next(index for index, command in enumerate(commands)
+                    if "stop-component" in command)
+        install = next(index for index, command in enumerate(commands)
+                       if "component-build" in command)
+        restart = next(index for index, command in enumerate(commands)
+                       if "restart-component" in command)
+        self.assertLess(stop, install)
+        self.assertLess(install, restart)
+
+    @patch("saslik.runner.threading.Thread")
+    def test_component_update_keeps_existing_connection_cards(self, thread):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory), instance="lab1")
+            runner._job = Job()
+            runner._job.lines.extend([
+                "Spider:", "  UI: http://127.0.0.1:15173/",
+                "  HTTP CONNECT: http://127.0.0.1:33128",
+            ])
+            runner.start_job("update-component", component="spider")
+        self.assertEqual("http://127.0.0.1:15173/", runner._job.endpoints["spider_ui"])
+        thread.return_value.start.assert_called_once()
 
     def test_existing_config_is_never_prepared_or_rewritten(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -323,6 +323,41 @@ class SystemdComponents:
             _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
         self._stop_legacy_processes()
 
+    @staticmethod
+    def component_group(component: str) -> tuple[str, ...]:
+        groups = {
+            "smithproxy": ("smithproxy",),
+            "spider": ("spider", "frontend"),
+            "sift": ("sift",),
+            "pcap-viewer": ("pcap-storage", "pcap-viewer"),
+        }
+        try:
+            return groups[component]
+        except KeyError as exc:
+            raise ValueError(f"Neznámá komponenta: {component}") from exc
+
+    def stop_component(self, component: str) -> None:
+        """Stop only the services owned by one updatable component."""
+        for name in reversed(self.component_group(component)):
+            unit = unit_name(self.instance, name)
+            _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
+            _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
+
+    def restart_component(self, component: str) -> None:
+        """Recreate only the selected component's transient services."""
+        if component == "spider":
+            self.build_auxiliaries()
+        selected = set(self.component_group(component))
+        components = [item for item in self.components() if item.name in selected]
+        if len(components) != len(selected):
+            missing = sorted(selected.difference(item.name for item in components))
+            raise RuntimeError("Chybí runtime komponenty: " + ", ".join(missing))
+        self.stop_component(component)
+        for item in components:
+            self._start_component(item)
+            if item.name == "pcap-storage":
+                self._wait_storage_ready()
+
     def components_if_configured(self) -> list[Component]:
         try:
             return self.components()
@@ -438,10 +473,12 @@ class SystemdComponents:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-components")
-    parser.add_argument("action", choices=("build", "up", "down", "status"))
+    parser.add_argument("action", choices=("build", "up", "down", "status",
+                                           "stop-component", "restart-component"))
     parser.add_argument("lab", type=Path)
     parser.add_argument("--instance", default="default")
     parser.add_argument("--expose-address", default="127.0.0.1")
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "pcap-viewer"))
     args = parser.parse_args(argv)
     manager = SystemdComponents(args.lab, args.instance, args.expose_address)
     try:
@@ -451,10 +488,18 @@ def main(argv: list[str] | None = None) -> int:
             manager.up()
         elif args.action == "down":
             manager.down()
+        elif args.action == "stop-component":
+            if not args.component:
+                raise RuntimeError("Chybí --component.")
+            manager.stop_component(args.component)
+        elif args.action == "restart-component":
+            if not args.component:
+                raise RuntimeError("Chybí --component.")
+            manager.restart_component(args.component)
         else:
             for name, status in manager.status().items():
                 print(f"{name}: {status['state']} pid={status['pid'] or '-'} unit={status['unit']}")
-    except (OSError, RuntimeError, KeyError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.CalledProcessError) as exc:
         print(f"saslik-components: {exc}", file=sys.stderr)
         return 1
     return 0

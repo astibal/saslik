@@ -524,6 +524,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(setting_value(self.server.runner.lab, "ref_smithproxy")),
                 str(body.get("template", "spider-sift")),
                 str(body.get("ca_cert", "")), str(body.get("ca_key", "")),
+                str(body.get("component", "")),
             )
             self._json({"job_id": job_id}, HTTPStatus.ACCEPTED)
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

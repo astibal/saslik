@@ -138,6 +138,26 @@ def sync_viewer(lab: Path) -> None:
     _refresh_preserved_dirty_sources(lab, preserved)
 
 
+def sync_component(lab: Path, component: str, smithproxy_ref: str = "master") -> None:
+    """Update exactly one managed source checkout."""
+    sources = lab / "src"
+    preserved = _preserved_dirty_sources(lab)
+    values = {
+        "smithproxy": ("smithproxy", "SASLIK_SMITHPROXY_REPOSITORY", smithproxy_ref),
+        "spider": ("smithproxy-spider", "SASLIK_SPIDER_REPOSITORY",
+                   str(setting_value(lab, "ref_spider"))),
+        "sift": ("sift", "SASLIK_SIFT_REPOSITORY", str(setting_value(lab, "ref_sift"))),
+        "pcap-viewer": ("capture-zone-viewer", "SASLIK_PCAP_VIEWER_REPOSITORY",
+                        str(setting_value(lab, "ref_pcap_viewer"))),
+    }
+    if component not in values:
+        raise ValueError(f"Neznámá komponenta: {component}")
+    checkout, environment, ref = values[component]
+    repository = os.environ.get(environment, REPOSITORIES[checkout])
+    _sync_checkout(sources / checkout, repository, ref, checkout in preserved)
+    _refresh_preserved_dirty_sources(lab, preserved)
+
+
 def _preserved_dirty_sources(lab: Path) -> set[str]:
     path = lab / "state/cloned-dirty-sources.json"
     try:
@@ -185,6 +205,29 @@ def build(lab: Path) -> None:
             command.extend(["--target", target])
         _run(command)
     install_viewer(lab)
+
+
+def build_component(lab: Path, component: str) -> None:
+    """Build or install one component without touching the other runtimes."""
+    if component == "pcap-viewer":
+        install_viewer(lab)
+        return
+    projects = {
+        "smithproxy": (lab / "src/smithproxy", lab / "build/smithproxy",
+                       ["-DBUILD_TESTING=OFF"], "smithproxy"),
+        "spider": (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
+        "sift": (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
+    }
+    if component not in projects:
+        raise ValueError(f"Neznámá komponenta: {component}")
+    source, destination, options, target = projects[component]
+    build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
+    _run(["cmake", "-S", str(source), "-B", str(destination),
+          f"-DCMAKE_BUILD_TYPE={build_type}", *options])
+    command = ["cmake", "--build", str(destination), f"-j{os.cpu_count() or 1}"]
+    if target:
+        command.extend(["--target", target])
+    _run(command)
 
 
 def save_binary_bundle(lab: Path, destination: Path) -> None:
@@ -402,7 +445,8 @@ def _create_config(lab: Path, api_key: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-workspace")
-    parser.add_argument("action", choices=("sync", "build", "viewer-sync", "viewer-install",
+    parser.add_argument("action", choices=("sync", "build", "component-sync", "component-build",
+                                           "viewer-sync", "viewer-install",
                                            "init", "bundle-save", "bundle-load", "bundle-clear",
                                            "discard-changes"))
     parser.add_argument("lab", type=Path)
@@ -412,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ca-cert", type=Path)
     parser.add_argument("--ca-key", type=Path)
     parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "pcap-viewer"))
     args = parser.parse_args(argv)
     try:
         if args.action == "sync":
@@ -422,6 +467,14 @@ def main(argv: list[str] | None = None) -> int:
             sync_viewer(args.lab)
         elif args.action == "viewer-install":
             install_viewer(args.lab)
+        elif args.action == "component-sync":
+            if not args.component:
+                raise RuntimeError("Chybí --component.")
+            sync_component(args.lab, args.component, args.ref)
+        elif args.action == "component-build":
+            if not args.component:
+                raise RuntimeError("Chybí --component.")
+            build_component(args.lab, args.component)
         elif args.action == "init":
             created = initialize_state(args.lab, args.template,
                                        ca_cert=args.ca_cert, ca_key=args.ca_key)
@@ -438,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
             save_binary_bundle(args.lab, args.bundle)
         else:
             load_binary_bundle(args.lab, args.bundle)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"saslik-workspace: {exc}", file=sys.stderr)
         return 1
     return 0

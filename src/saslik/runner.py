@@ -75,6 +75,8 @@ class Job:
     lines: deque[str] = field(default_factory=lambda: deque(maxlen=1500))
     revision: int = 0
     template: str = "spider-sift"
+    component: str = ""
+    endpoints: dict[str, str] = field(default_factory=dict)
 
 
 class LabRunner:
@@ -117,6 +119,7 @@ class LabRunner:
     def snapshot(self) -> dict:
         with self._lock:
             lines = list(self._job.lines)
+            previous_endpoints = dict(self._job.endpoints)
             result = {
                 "id": self._job.id,
                 "action": self._job.action,
@@ -133,7 +136,7 @@ class LabRunner:
                 "identities": list_identities(self.lab, self.instance),
                 "binary_bundle": self._binary_bundle(),
             }
-        endpoints = parse_endpoints(lines)
+        endpoints = parse_endpoints(lines) or previous_endpoints
         if (self.lab / "state/certs/default/ca-cert.pem").is_file():
             endpoints["ca_download"] = "/api/ca"
         result["endpoints"] = endpoints
@@ -170,9 +173,12 @@ class LabRunner:
         return result
 
     def start_job(self, action: str, branch: str = "master", template: str = "spider-sift",
-                  ca_cert: str = "", ca_key: str = "") -> int:
-        if action not in {"start", "stop", "reset", "fetch", "status"}:
+                  ca_cert: str = "", ca_key: str = "", component: str = "") -> int:
+        if action not in {"start", "stop", "reset", "fetch", "status", "update-component"}:
             raise ValueError("Neznámá akce.")
+        if action == "update-component" and component not in {
+                "smithproxy", "spider", "sift", "pcap-viewer"}:
+            raise ValueError("Neznámá komponenta.")
         branch = validate_ref(branch)
         if template not in {"spider-sift", "spider", "proxy"}:
             raise ValueError("Neznámá počáteční šablona.")
@@ -181,16 +187,24 @@ class LabRunner:
                 raise RuntimeError("Jedna operace už běží.")
             job_id = self._next_id
             self._next_id += 1
-            self._job = Job(id=job_id, action=action, state="running", template=template)
+            endpoints = ((parse_endpoints(list(self._job.lines)) or dict(self._job.endpoints))
+                         if action == "update-component" else {})
+            self._job = Job(id=job_id, action=action, state="running", template=template,
+                            component=component, endpoints=endpoints)
         threading.Thread(target=self._run_job,
-                         args=(job_id, action, branch, template, ca_cert, ca_key),
+                         args=(job_id, action, branch, template, ca_cert, ca_key, component),
                          daemon=True).start()
         return job_id
 
     def run_console(self, action: str, branch: str = "master", emit: Callable[[str], None] = print,
-                    template: str = "spider-sift", ca_cert: str = "", ca_key: str = "") -> int:
+                    template: str = "spider-sift", ca_cert: str = "", ca_key: str = "",
+                    component: str = "") -> int:
         branch = validate_ref(branch)
-        for command in self._commands(action, branch, template, ca_cert, ca_key):
+        return self._run_commands(
+            self._commands(action, branch, template, ca_cert, ca_key, component), emit)
+
+    def _run_commands(self, commands: list[list[str]], emit: Callable[[str], None]) -> int:
+        for command in commands:
             emit("$ " + " ".join(map(str, command)))
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, bufsize=1, env=self._env())
@@ -203,17 +217,17 @@ class LabRunner:
         return 0
 
     def _run_job(self, job_id: int, action: str, branch: str, template: str,
-                 ca_cert: str, ca_key: str) -> None:
+                 ca_cert: str, ca_key: str, component: str = "") -> None:
         try:
-            code = self.run_console(action, branch, lambda line: self._append(job_id, line),
-                                    template, ca_cert, ca_key)
+            commands = self._commands(action, branch, template, ca_cert, ca_key, component)
+            code = self._run_commands(commands, lambda line: self._append(job_id, line))
             self._finish(job_id, "done" if code == 0 else "failed", code)
         except Exception as exc:
             self._append(job_id, f"Saslik: {exc}")
             self._finish(job_id, "failed", 1)
 
     def _commands(self, action: str, branch: str, template: str = "spider-sift",
-                  ca_cert: str = "", ca_key: str = "") -> list[list[str]]:
+                  ca_cert: str = "", ca_key: str = "", component: str = "") -> list[list[str]]:
         sudo = ["sudo", "-n"]
         # Sources, builds and persistent workspace data belong to the desktop
         # user.  In particular Git must retain access to that user's SSH agent.
@@ -289,6 +303,17 @@ class LabRunner:
             return commands
         if action == "fetch":
             return [workspace + ["sync", str(self.lab), "--ref", branch]]
+        if action == "update-component":
+            commands = [workspace + ["component-sync", str(self.lab), "--ref", branch,
+                                     "--component", component]]
+            if component == "pcap-viewer":
+                commands.append(components + ["stop-component", *component_args,
+                                               "--component", component])
+            commands.extend([
+                workspace + ["component-build", str(self.lab), "--component", component],
+                components + ["restart-component", *component_args, "--component", component],
+            ])
+            return commands
         if action == "stop":
             commands = [
                 components + ["down", *component_args],
