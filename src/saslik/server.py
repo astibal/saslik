@@ -6,6 +6,7 @@ import ipaddress
 import io
 import mimetypes
 import os
+import pty
 import secrets
 import select
 import shutil
@@ -38,6 +39,7 @@ from .files import (delete_path, file_revision, list_directory, make_directory,
 from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
                   revert_all_patches, revert_patch)
+from .debug import DEBUG_COMPONENTS, component_binary, debug_status
 
 
 APP_BROWSERS = (
@@ -87,6 +89,22 @@ class CliSession:
             elif self.telnet_state == "subneg-iac":
                 self.telnet_state = "data" if byte == 240 else "subneg"
         return bytes(output)
+
+
+@dataclass
+class GdbSession:
+    process: subprocess.Popen
+    fd: int
+    created_at: float = field(default_factory=time.monotonic)
+    last_seen: float = field(default_factory=time.monotonic)
+
+    def close(self) -> None:
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        if self.process.poll() is None:
+            self.process.terminate()
 
 
 @dataclass(frozen=True)
@@ -165,6 +183,7 @@ class SaslikServer(ThreadingHTTPServer):
         self.devel = devel
         self.csrf = secrets.token_urlsafe(24)
         self.cli_sessions: dict[str, CliSession] = {}
+        self.gdb_sessions: dict[str, GdbSession] = {}
         self.cli_lock = threading.Lock()
         self.spider_bootstraps = SpiderBootstrapStore()
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
@@ -229,6 +248,9 @@ class SaslikServer(ThreadingHTTPServer):
                 session.stream.close()
             except OSError:
                 pass
+        for session in list(self.gdb_sessions.values()):
+            session.close()
+        self.gdb_sessions.clear()
         self.guardian_stop()
         super().server_close()
 
@@ -268,6 +290,18 @@ class Handler(BaseHTTPRequestHandler):
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
             return self._json({"patches": list_patches(lab)})
+        if path == "/api/dev/debug":
+            if not self.server.devel:
+                return self._json({"error": "Dev režim není povolený."},
+                                  HTTPStatus.FORBIDDEN)
+            workspace = parse_qs(parsed.query).get("workspace", [""])[0]
+            lab, name = self._workspace_target(workspace)
+            return self._json({"components": debug_status(lab, name)})
+        if path == "/api/dev/gdb/session":
+            if not self.server.devel:
+                return self._json({"error": "Dev režim není povolený."},
+                                  HTTPStatus.FORBIDDEN)
+            return self._gdb_read(parse_qs(parsed.query).get("session", [""])[0])
         if path == "/api/workspace/settings":
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
@@ -481,7 +515,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._spider_bootstrap_redeem()
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
-        if path == "/api/dev/patch" and not self.server.devel:
+        if path.startswith("/api/dev/") and not self.server.devel:
             return self._json({"error": "Dev režim není povolený. Spusť Saslik s --devel."},
                               HTTPStatus.FORBIDDEN)
         if path == "/api/binary/load":
@@ -493,7 +527,8 @@ class Handler(BaseHTTPRequestHandler):
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
                         "/api/workspace/action", "/api/workspace/settings",
                         "/api/crashes/clear", "/api/crashes/diagnose",
-                        "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch"}:
+                        "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
+                        "/api/dev/debug", "/api/dev/gdb/session"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -535,6 +570,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "result": result,
                                    "patches": list_patches(lab),
                                    "source_changes": source_changes(lab)})
+            if path == "/api/dev/debug":
+                lab, instance = self._workspace_target(str(body.get("workspace", "")))
+                component = str(body.get("component", ""))
+                operation = str(body.get("operation", "start"))
+                if operation not in {"start", "stop"}:
+                    raise ValueError("Neznámá GDB operace.")
+                if not self.server.guardian_request(
+                        f"gdb-{operation}", Instance(instance, self.server.runner.egress),
+                        component=component):
+                    raise RuntimeError("Privilegovaný GDB helper operaci odmítl.")
+                return self._json({"ok": True,
+                                   "components": debug_status(lab, instance)})
+            if path == "/api/dev/gdb/session":
+                return self._gdb_session(body)
             if path == "/api/ca/action":
                 return self._ca_action(str(body.get("store", "")))
             if path == "/api/identity/action":
@@ -876,6 +925,77 @@ class Handler(BaseHTTPRequestHandler):
             cli.stream.close()
             return self._json({"ok": True})
         self._json({"error": "Neznámá CLI akce."}, HTTPStatus.BAD_REQUEST)
+
+    def _gdb_session(self, body: dict) -> None:
+        action = str(body.get("action", ""))
+        session_id = str(body.get("session", ""))
+        if action == "open":
+            workspace = str(body.get("workspace", ""))
+            component = str(body.get("component", ""))
+            lab, instance = self._workspace_target(workspace)
+            states = {item["component"]: item for item in debug_status(lab, instance)}
+            state = states.get(component)
+            if not state or not state.get("active"):
+                raise RuntimeError("Nejdřív spusť gdbserver pro tuto komponentu.")
+            gdb = shutil.which("gdb")
+            if not gdb:
+                raise RuntimeError("Chybí GDB. Nainstaluj balíček gdb.")
+            binary = component_binary(lab, component)
+            port = DEBUG_COMPONENTS[component][1]
+            master, slave = pty.openpty()
+            try:
+                process = subprocess.Popen(
+                    [gdb, "-q", str(binary), "-ex", f"target remote 127.0.0.1:{port}"],
+                    stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+                    start_new_session=True,
+                )
+            finally:
+                os.close(slave)
+            os.set_blocking(master, False)
+            session_id = secrets.token_urlsafe(18)
+            self.server.gdb_sessions[session_id] = GdbSession(process, master)
+            return self._json({"session": session_id, "component": component})
+        session = self.server.gdb_sessions.get(session_id)
+        if session is None:
+            return self._json({"error": "GDB relace neexistuje."}, HTTPStatus.NOT_FOUND)
+        session.last_seen = time.monotonic()
+        if action == "write":
+            os.write(session.fd, str(body.get("data", "")).encode("utf-8"))
+            return self._json({"ok": True})
+        if action == "close":
+            self.server.gdb_sessions.pop(session_id, None)
+            session.close()
+            return self._json({"ok": True})
+        return self._json({"error": "Neznámá GDB akce."}, HTTPStatus.BAD_REQUEST)
+
+    def _gdb_read(self, session_id: str) -> None:
+        session = self.server.gdb_sessions.get(session_id)
+        if session is None:
+            return self._json({"error": "GDB relace neexistuje."}, HTTPStatus.NOT_FOUND)
+        session.last_seen = time.monotonic()
+        chunks = []
+        try:
+            readable, _, _ = select.select([session.fd], [], [], 0.25)
+            if readable:
+                while True:
+                    try:
+                        chunk = os.read(session.fd, 65536)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    except BlockingIOError:
+                        break
+        except OSError:
+            pass
+        closed = session.process.poll() is not None
+        if closed:
+            self.server.gdb_sessions.pop(session_id, None)
+            try:
+                os.close(session.fd)
+            except OSError:
+                pass
+        data = b"".join(chunks).decode("utf-8", errors="replace")
+        return self._json({"data": data, "closed": closed})
 
     def _cli_read(self, session: str) -> None:
         with self.server.cli_lock:

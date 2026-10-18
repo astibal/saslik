@@ -14,6 +14,7 @@ from .network import down as network_down
 from .pasta import pasta_down
 from .routing import routing_down
 from .crash import diagnose_smithproxy
+from .debug import start_gdbserver, stop_gdbserver
 
 
 def cleanup(lab: Path, instance: str, expose_address: str) -> None:
@@ -63,6 +64,11 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     elif payload.get("action") == "diagnose-smithproxy":
                         diagnose_smithproxy(lab, str(payload["instance"]),
                                             int(payload.get("signal", 11)))
+                    elif payload.get("action") == "gdb-start":
+                        start_gdbserver(*target, str(payload.get("component", "")))
+                    elif payload.get("action") == "gdb-stop":
+                        stop_gdbserver(str(payload["instance"]),
+                                       str(payload.get("component", "")))
                     connection.sendall(b'{"ok":true}\n')
                 except Exception as exc:
                     connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")
