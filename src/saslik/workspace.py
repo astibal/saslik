@@ -71,17 +71,21 @@ def _run(command: list[str], *, quiet: bool = False) -> None:
                    stderr=subprocess.DEVNULL if quiet else None)
 
 
-def _sync_checkout(path: Path, repository: str, ref: str) -> None:
+def _sync_checkout(path: Path, repository: str, ref: str,
+                   preserve_dirty: bool = False) -> None:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         _run(["git", "clone", "--recurse-submodules", repository, str(path)])
     if not (path / ".git").is_dir():
         raise RuntimeError(f"Saslik odmítá přepsat cizí adresář {path}.")
     changed = subprocess.run(
-        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"],
+        ["git", "-C", str(path), "status", "--porcelain"],
         check=True, text=True, stdout=subprocess.PIPE,
     ).stdout.strip()
     if changed:
+        if preserve_dirty:
+            print(f"Zachovávám přenesené lokální změny: {path}")
+            return
         raise RuntimeError(
             f"Zdrojový strom má lokální změny: {path}. "
             "Můžeš je zahodit v kartě Logy."
@@ -106,14 +110,18 @@ def _ensure_checkout(path: Path, repository: str) -> None:
 
 def sync(lab: Path, smithproxy_ref: str) -> None:
     sources = lab / "src"
+    preserved = _preserved_dirty_sources(lab)
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
     _sync_checkout(sources / "smithproxy-spider", spider_repo,
-                   str(setting_value(lab, "ref_spider")))
-    _sync_checkout(sources / "sift", sift_repo, str(setting_value(lab, "ref_sift")))
-    _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref)
+                   str(setting_value(lab, "ref_spider")), "smithproxy-spider" in preserved)
+    _sync_checkout(sources / "sift", sift_repo, str(setting_value(lab, "ref_sift")),
+                   "sift" in preserved)
+    _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref,
+                   "smithproxy" in preserved)
     sync_viewer(lab)
+    _refresh_preserved_dirty_sources(lab, preserved)
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "source-ref").write_text(smithproxy_ref + "\n", encoding="utf-8")
@@ -124,7 +132,30 @@ def sync_viewer(lab: Path) -> None:
                                  REPOSITORIES["capture-zone-viewer"])
     viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF",
                                 str(setting_value(lab, "ref_pcap_viewer")))
-    _sync_checkout(lab / "src/capture-zone-viewer", viewer_repo, viewer_ref)
+    preserved = _preserved_dirty_sources(lab)
+    _sync_checkout(lab / "src/capture-zone-viewer", viewer_repo, viewer_ref,
+                   "capture-zone-viewer" in preserved)
+    _refresh_preserved_dirty_sources(lab, preserved)
+
+
+def _preserved_dirty_sources(lab: Path) -> set[str]:
+    path = lab / "state/cloned-dirty-sources.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return {str(item) for item in value if str(item) in REPOSITORIES} if isinstance(value, list) else set()
+
+
+def _refresh_preserved_dirty_sources(lab: Path, preserved: set[str]) -> None:
+    if not preserved:
+        return
+    remaining = preserved.intersection(source_changes(lab))
+    path = lab / "state/cloned-dirty-sources.json"
+    if remaining:
+        path.write_text(json.dumps(sorted(remaining)) + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
 
 
 def install_viewer(lab: Path) -> None:

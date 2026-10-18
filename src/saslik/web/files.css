@@ -1,0 +1,33 @@
+.files-toolbar { grid-template-columns: minmax(0, 1fr) auto auto auto auto auto; }
+.files-follow { display:flex; align-items:center; gap:5px; color:var(--green); font-size:8px; }
+.file-change { padding:4px 7px; border-radius:99px; color:var(--yellow); background:#2b2111; font-size:7px!important; white-space:nowrap; }
+.file-change.dirty { color:var(--hot); background:#2d1710; }
+.files-detached-placeholder { min-height:260px; display:grid; place-items:center; }
+.files-detached-placeholder>div { display:grid; justify-items:center; gap:9px; color:var(--muted); font-size:9px; }
+.files-only { margin:0; overflow:hidden; }
+.files-only main { width:100%; height:100dvh; }
+.files-only #files { display:block!important; margin:0; border:0; border-radius:0; height:100dvh; }
+.files-only .files-layout { height:calc(100dvh - 54px); min-height:0; }
+.files-toolbar nav button { font-size:10px; }
+.file-row b { font-size:11px; }
+.file-row small { font-size:8px; }
+.file-editor-head b { font-size:10px; }
+.file-editor-head small { font-size:8px; }
+.file-code { min-width:0; min-height:0; overflow:hidden; background:#080d0f; }
+.file-code>pre,
+.file-edit-layer pre,
+.file-edit-layer textarea { box-sizing:border-box; margin:0; padding:14px; tab-size:4; white-space:pre; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+.file-code>pre { width:100%; height:100%; overflow:auto; color:#d5d9d4; }
+.file-edit-layer { position:relative; width:100%; height:100%; overflow:hidden; }
+.file-edit-layer pre,
+.file-edit-layer textarea { position:absolute; inset:0; width:100%; height:100%; overflow:auto; border:0; outline:0; resize:none; }
+.file-edit-layer pre { z-index:0; pointer-events:none; color:#d5d9d4; background:#080d0f; }
+.file-edit-layer textarea { z-index:1; color:transparent; caret-color:#fff; background:transparent; -webkit-text-fill-color:transparent; }
+.file-edit-layer textarea::selection { background:#315f78; color:transparent; -webkit-text-fill-color:transparent; }
+.syn-comment { color:#66756d; font-style:italic; }
+.syn-string { color:#d6ad65; }
+.syn-bool { color:#ff7958; }
+.syn-number { color:#80bfff; }
+.syn-key { color:#42d6cb; }
+.file-editor.empty .file-code { opacity:.35; }
+@media(max-width:760px){.files-toolbar{grid-template-columns:1fr auto auto}.files-layout{grid-template-columns:1fr}}

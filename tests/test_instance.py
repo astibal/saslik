@@ -1,11 +1,12 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from saslik.instance import (
-    Instance, remember_instance, remembered_instance, rename_instance,
+    Instance, clone_instance, remember_instance, remembered_instance, rename_instance,
     validate_instance_name,
 )
 
@@ -73,6 +74,68 @@ class InstanceTests(unittest.TestCase):
             new = Instance.load("demo")
             self.assertTrue((new.config_dir / "saslik.toml").is_file())
             self.assertEqual("kept", (new.data_dir / "marker").read_text(encoding="utf-8"))
+
+    def test_clone_copies_only_persistent_workspace_state(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SASLIK_CONFIG_DIR": f"{directory}/config",
+                         "SASLIK_DATA_DIR": f"{directory}/data"}
+        ):
+            source = Instance.load("lab1")
+            source.ensure_config()
+            state = source.data_dir / "state"
+            (state / "certs/default").mkdir(parents=True)
+            (state / "smithproxy.cfg").write_text(
+                f'certs_path = "{source.data_dir}/state/certs/default"', encoding="utf-8")
+            (state / "state.env").write_text(
+                f"API_KEY=secret\nSMITHPROXY_CA_CERT={source.data_dir}/state/certs/default/ca-cert.pem",
+                encoding="utf-8")
+            (state / "workspace-settings.json").write_text(
+                '{"ref_smithproxy":"feature"}', encoding="utf-8")
+            (state / "certs/default/ca-cert.pem").write_text("CA", encoding="utf-8")
+            (state / "smithproxy.log").write_text("runtime log", encoding="utf-8")
+            (state / "crashes").mkdir()
+            dirty_source = source.data_dir / "src/smithproxy"
+            dirty_source.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(dirty_source)], check=True)
+            tracked = dirty_source / "tracked.txt"
+            tracked.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(dirty_source), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(dirty_source), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+            ], check=True)
+            tracked.write_text("locally changed\n", encoding="utf-8")
+            (source.data_dir / "build").mkdir()
+
+            clone_instance("lab1", "lab-copy")
+
+            clone = Instance.load("lab-copy")
+            cloned_config = (clone.data_dir / "state/smithproxy.cfg").read_text()
+            cloned_env = (clone.data_dir / "state/state.env").read_text()
+            self.assertIn(str(clone.data_dir), cloned_config)
+            self.assertIn(str(clone.data_dir), cloned_env)
+            self.assertNotIn(str(source.data_dir), cloned_config)
+            self.assertNotIn(str(source.data_dir), cloned_env)
+            self.assertIn("API_KEY=secret", cloned_env)
+            self.assertEqual("CA", (clone.data_dir /
+                                     "state/certs/default/ca-cert.pem").read_text())
+            self.assertTrue((clone.config_dir / "saslik.toml").is_file())
+            self.assertEqual("locally changed\n", (clone.data_dir /
+                             "src/smithproxy/tracked.txt").read_text())
+            self.assertEqual('["smithproxy"]\n', (clone.data_dir /
+                             "state/cloned-dirty-sources.json").read_text())
+            for relative in ("state/smithproxy.log", "state/crashes", "build"):
+                self.assertFalse((clone.data_dir / relative).exists())
+
+    def test_clone_rejects_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SASLIK_CONFIG_DIR": f"{directory}/config",
+                         "SASLIK_DATA_DIR": f"{directory}/data"}
+        ):
+            Instance.load("lab1").ensure_config()
+            Instance.load("existing").ensure_config()
+            with self.assertRaises(RuntimeError):
+                clone_instance("lab1", "existing")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .runner import LabRunner, data_root
 from .ca import install_store, store_status
@@ -32,6 +32,8 @@ from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
 from .workspace import source_changes
+from .files import (delete_path, file_revision, list_directory, make_directory,
+                    read_file, target_path, write_file)
 
 
 APP_BROWSERS = (
@@ -248,6 +250,12 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/workspaces":
             return self._json(self._workspaces())
+        if path == "/api/files/list":
+            return self._files_list(parsed.query)
+        if path == "/api/files/read":
+            return self._files_read(parsed.query)
+        if path == "/api/files/download":
+            return self._files_download(parsed.query)
         if path == "/api/workspace/settings":
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
@@ -295,6 +303,86 @@ class Handler(BaseHTTPRequestHandler):
         if workspace not in {item.name for item in Instance.discover()}:
             raise RuntimeError(f"Workspace neexistuje: {workspace}")
         return instance.data_dir, instance.name
+
+    def _file_query(self, query: str) -> tuple[Path, str]:
+        values = parse_qs(query)
+        lab, _ = self._workspace_target(values.get("workspace", [""])[0])
+        return lab, values.get("path", [""])[0]
+
+    def _files_list(self, query: str) -> None:
+        try:
+            lab, value = self._file_query(query)
+            self._json(list_directory(lab, value))
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_read(self, query: str) -> None:
+        try:
+            lab, value = self._file_query(query)
+            data = read_file(lab, value)
+            if b"\0" in data:
+                raise ValueError("Binární soubor nelze otevřít v textovém editoru.")
+            self._json({"path": value, "content": data.decode("utf-8"),
+                        "revision": file_revision(lab, value)})
+        except UnicodeDecodeError:
+            self._json({"error": "Soubor není platný UTF-8 text."}, HTTPStatus.BAD_REQUEST)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_download(self, query: str) -> None:
+        try:
+            lab, value = self._file_query(query)
+            target, _ = target_path(lab, value)
+            if not target.is_file():
+                raise ValueError("Stáhnout lze pouze běžný soubor.")
+            filename = target.name.replace('"', "")
+            ascii_name = filename.encode("ascii", "ignore").decode() or "download"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}')
+            self.send_header("Content-Length", str(target.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with target.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_upload(self, query: str) -> None:
+        try:
+            if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
+                return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
+            lab, value = self._file_query(query)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > 1024 * 1024 * 1024:
+                raise ValueError("Soubor je příliš velký.")
+            payload = self.rfile.read(length)
+            if len(payload) != length:
+                raise ValueError("Upload byl přerušen.")
+            write_file(lab, value, payload)
+            self._json({"ok": True, "path": value})
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_action(self, body: dict) -> None:
+        operation = str(body.get("operation", ""))
+        lab, _ = self._workspace_target(str(body.get("workspace", "")))
+        value = str(body.get("path", ""))
+        if operation == "save":
+            content = body.get("content", "")
+            if not isinstance(content, str) or len(content.encode("utf-8")) > 2 * 1024 * 1024:
+                raise ValueError("Text je pro editor příliš velký.")
+            write_file(lab, value, content.encode("utf-8"))
+        elif operation == "mkdir":
+            make_directory(lab, value)
+        elif operation == "delete":
+            delete_path(lab, value, override_locked=body.get("override_locked") is True)
+        else:
+            raise ValueError("Neznámá souborová operace.")
+        self._json({"ok": True})
 
     def _ca(self, identity: str = "", workspace: str = "") -> None:
         lab, instance = self._workspace_target(workspace)
@@ -371,14 +459,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._binary_load()
         if path == "/api/binary/clear":
             return self._binary_clear()
+        if path == "/api/files/upload":
+            return self._files_upload(urlparse(self.path).query)
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
                         "/api/workspace/action", "/api/workspace/settings",
                         "/api/crashes/clear", "/api/crashes/diagnose",
-                        "/api/spider/bootstrap"}:
+                        "/api/spider/bootstrap", "/api/files/action"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
-            limit = 24 * 1024 * 1024 if path == "/api/identity/action" else 4096
+            limit = (24 * 1024 * 1024 if path == "/api/identity/action" else
+                     3 * 1024 * 1024 if path == "/api/files/action" else 4096)
             if declared > limit:
                 return self._json({"error": "Požadavek je příliš velký."},
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
@@ -388,6 +479,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._spider_bootstrap_issue(str(body.get("origin", "")))
             if path == "/api/cli":
                 return self._cli_write(body)
+            if path == "/api/files/action":
+                return self._files_action(body)
             if path == "/api/ca/action":
                 return self._ca_action(str(body.get("store", "")))
             if path == "/api/identity/action":
@@ -572,6 +665,14 @@ class Handler(BaseHTTPRequestHandler):
             remember_instance(instance.name)
             self.server.guardian_arm()
             return self._json({"ok": True, "workspace": instance.name})
+        if operation == "clone":
+            command = [sys.executable, "-m", "saslik.instance", "clone",
+                       workspace, new_name]
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    text=True)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or "Klonování workspace selhalo.")
+            return self._json({"ok": True, "workspace": new_name})
         if operation != "rename":
             raise RuntimeError("Neznámá workspace operace.")
         command = ["sudo", "-n", sys.executable, "-m", "saslik.instance", "rename",

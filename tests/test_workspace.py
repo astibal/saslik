@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.workspace import (
-    _run, discard_source_changes, initialize_state, load_binary_bundle,
+    _run, _sync_checkout, discard_source_changes, initialize_state, load_binary_bundle,
     save_binary_bundle, source_changes,
 )
 
@@ -46,6 +46,24 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual("original\n", tracked.read_text(encoding="utf-8"))
             self.assertFalse((checkout / "untracked.txt").exists())
             self.assertEqual("keep\n", preserved.read_text(encoding="utf-8"))
+
+    def test_sync_can_preserve_a_cloned_dirty_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory) / "smithproxy"
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            tracked = checkout / "tracked.txt"
+            tracked.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(checkout), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+            ], check=True)
+            tracked.write_text("keep my work\n", encoding="utf-8")
+
+            _sync_checkout(checkout, "unused", "main", preserve_dirty=True)
+
+            self.assertEqual("keep my work\n", tracked.read_text(encoding="utf-8"))
 
     def test_binary_bundle_round_trip_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:
