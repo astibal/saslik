@@ -18,6 +18,15 @@
     color: var(--hot);
 }
 
+.component-row > strong { display: grid; gap: 3px; }
+.component-row > strong > small { color: var(--muted); font: 7px system-ui, sans-serif; }
+.component-row > strong > small::before { content: "●"; margin-right: 5px; }
+.component-row > strong > small.state-current { color: var(--green); }
+.component-row > strong > small.state-behind { color: #f3b54a; }
+.component-row > strong > small.state-dirty,
+.component-row > strong > small.state-diverged,
+.component-row > strong > small.state-error { color: #ff6688; }
+
 @media (max-width: 720px) {
     .component-row { grid-template-columns: 1fr 70px; }
     .component-row > button[data-component-update] { justify-self: end; }

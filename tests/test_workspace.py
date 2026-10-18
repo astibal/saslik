@@ -7,12 +7,34 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.workspace import (
-    _run, _sync_checkout, discard_source_changes, initialize_state, load_binary_bundle,
+    _run, _sync_checkout, component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
     save_binary_bundle, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_component_source_status_reports_missing_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = component_source_status(Path(directory), "smithproxy")
+        self.assertEqual("missing", result["state"])
+
+    @patch("saslik.workspace.subprocess.run")
+    def test_component_source_status_fetches_without_touching_fetch_head(self, run):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout=""),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0, stdout="abc\n"),
+            subprocess.CompletedProcess([], 0, stdout="abc\n"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "src/smithproxy/.git").mkdir(parents=True)
+            result = component_source_status(lab, "smithproxy")
+        self.assertEqual("current", result["state"])
+        fetch = run.call_args_list[1].args[0]
+        self.assertIn("--no-write-fetch-head", fetch)
+        self.assertIn("+master:refs/saslik/source-status/smithproxy", fetch)
+
     @patch("saslik.workspace.subprocess.run")
     def test_git_is_noninteractive_and_uses_ssh_agent(self, run):
         _run(["git", "fetch", "origin", "main"])

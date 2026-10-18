@@ -22,6 +22,66 @@ REPOSITORIES = {
     "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
 }
 
+COMPONENT_SOURCES = {
+    "smithproxy": ("smithproxy", "ref_smithproxy"),
+    "spider": ("smithproxy-spider", "ref_spider"),
+    "sift": ("sift", "ref_sift"),
+    "pcap-viewer": ("capture-zone-viewer", "ref_pcap_viewer"),
+}
+
+
+def component_source_status(lab: Path, component: str) -> dict[str, str]:
+    """Compare a managed checkout with its configured remote ref.
+
+    The fetch uses a private tracking ref and does not touch FETCH_HEAD, so a
+    background UI check cannot disturb an update already running in the lab.
+    """
+    if component not in COMPONENT_SOURCES:
+        raise ValueError(f"Neznámá komponenta: {component}")
+    checkout, ref_setting = COMPONENT_SOURCES[component]
+    path = lab.resolve() / "src" / checkout
+    if not (path / ".git").exists():
+        return {"state": "missing", "detail": "zdroj ještě není stažený"}
+    status = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        check=True, text=True, stdout=subprocess.PIPE, timeout=5,
+    ).stdout.strip()
+    if status:
+        return {"state": "dirty", "detail": "lokální změny"}
+    ref = str(setting_value(lab, ref_setting))
+    tracking = f"refs/saslik/source-status/{component}"
+    environment = os.environ.copy()
+    environment.setdefault("GIT_TERMINAL_PROMPT", "0")
+    environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    subprocess.run(
+        ["git", "-C", str(path), "fetch", "--quiet", "--no-write-fetch-head",
+         "origin", f"+{ref}:{tracking}"],
+        check=True, env=environment, timeout=20,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+        text=True, stdout=subprocess.PIPE, timeout=5,
+    ).stdout.strip()
+    remote = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", tracking], check=True,
+        text=True, stdout=subprocess.PIPE, timeout=5,
+    ).stdout.strip()
+    if head == remote:
+        return {"state": "current", "detail": "aktuální"}
+    behind = subprocess.run(
+        ["git", "-C", str(path), "merge-base", "--is-ancestor", "HEAD", tracking],
+        timeout=5,
+    ).returncode == 0
+    if behind:
+        return {"state": "behind", "detail": "je dostupná novější verze"}
+    ahead = subprocess.run(
+        ["git", "-C", str(path), "merge-base", "--is-ancestor", tracking, "HEAD"],
+        timeout=5,
+    ).returncode == 0
+    return {"state": "ahead" if ahead else "diverged",
+            "detail": "lokálně napřed" if ahead else "větev se rozešla"}
+
 
 def source_changes(lab: Path) -> list[str]:
     """Return managed source checkouts with local Git changes."""
