@@ -61,7 +61,24 @@ class RunnerTests(unittest.TestCase):
         joined = [" ".join(command) for command in commands]
         self.assertFalse(any("saslik.pasta snapshot" in command for command in joined))
         self.assertFalse(any("saslik.pasta up" in command for command in joined))
+        self.assertFalse(any("saslik.pasta down" in command for command in joined))
         self.assertFalse(any("run-test-" in command for command in joined))
+
+    def test_nat_stop_and_reset_do_not_touch_pasta(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory))
+            for action in ("stop", "reset"):
+                joined = [" ".join(command) for command in runner._commands(action, "main")]
+                self.assertFalse(any("saslik.pasta down" in command for command in joined))
+
+    def test_nat_cleans_up_previous_pasta_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory))
+            state = runner.lab / "state"
+            state.mkdir(parents=True)
+            (state / "egress").write_text("pasta\n", encoding="ascii")
+            joined = [" ".join(command) for command in runner._commands("start", "main")]
+        self.assertTrue(any("saslik.pasta down" in command for command in joined))
 
     def test_workspace_operations_run_as_user(self):
         with tempfile.TemporaryDirectory() as directory:

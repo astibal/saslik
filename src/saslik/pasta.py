@@ -23,6 +23,27 @@ def unit_name(instance: str) -> str:
     return f"saslik-pasta-{_unit_instance(instance)}.service"
 
 
+def cleanup_needed(lab: Path, instance: str | None = None,
+                   *, inspect_unit: bool = True) -> bool:
+    """Return whether this workspace has pasta state that needs cleanup."""
+    state = lab / "state"
+    markers = (state / "pasta.pid", state / "pasta.ip_forward.before")
+    try:
+        pasta_egress = (state / "egress").read_text(encoding="ascii").strip() == "pasta"
+    except OSError:
+        pasta_egress = False
+    if pasta_egress or any(path.exists() for path in markers):
+        return True
+    if not inspect_unit:
+        return False
+    name = unit_name(instance or lab.name)
+    result = subprocess.run(
+        ["systemctl", "is-active", "--quiet", name], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
 def _run(command: list[str], *, tolerate: bool = False) -> None:
     result = subprocess.run(
         command,
@@ -99,7 +120,7 @@ def pasta_up(lab: Path, instance: str) -> None:
     ]
     try:
         _run([
-            "systemd-run", "--quiet", "--collect", "--service-type=exec",
+            "systemd-run", "--no-ask-password", "--quiet", "--collect", "--service-type=exec",
             f"--unit={unit_name(instance)}", "--slice=saslik-egress.slice",
             "--property=KillMode=control-group", "--property=Restart=on-failure",
             "--property=RestartSec=500ms",
@@ -119,7 +140,7 @@ def pasta_up(lab: Path, instance: str) -> None:
         else:
             raise RuntimeError("Pasta nevytvořila namespace interface saslik-out.")
     except Exception:
-        _run(["systemctl", "stop", unit_name(instance)], tolerate=True)
+        _run(["systemctl", "--no-ask-password", "stop", unit_name(instance)], tolerate=True)
         _unmount_namespace_reference()
         raise
 
@@ -143,8 +164,16 @@ def pasta_up(lab: Path, instance: str) -> None:
 
 def pasta_down(lab: Path, instance: str | None = None) -> None:
     instance = instance or lab.name
-    _run(["systemctl", "stop", unit_name(instance)], tolerate=True)
-    _run(["systemctl", "reset-failed", unit_name(instance)], tolerate=True)
+    # NAT workspaces must not issue a mutating systemd operation for a pasta
+    # unit they never owned. Besides being needless, a non-root caller may
+    # otherwise provoke a desktop polkit authorization dialog.
+    if not cleanup_needed(lab, instance):
+        return
+    # Never let an accidentally unprivileged cleanup fall back to a desktop
+    # polkit prompt. Normal lifecycle calls arrive through sudo or the root
+    # guardian; an unprivileged caller should fail quietly, not steal focus.
+    _run(["systemctl", "--no-ask-password", "stop", unit_name(instance)], tolerate=True)
+    _run(["systemctl", "--no-ask-password", "reset-failed", unit_name(instance)], tolerate=True)
     # One-way cleanup of pasta processes created before systemd ownership.
     pid_file = lab / "state/pasta.pid"
     if pid_file.is_file():

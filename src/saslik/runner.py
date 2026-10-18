@@ -14,6 +14,7 @@ from typing import Callable
 
 from .components import SystemdComponents
 from .health import collect as collect_health
+from .pasta import cleanup_needed as pasta_cleanup_needed
 
 
 def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False) -> tuple[str, list[str]]:
@@ -226,14 +227,17 @@ class LabRunner:
         dns_server = "169.254.1.1" if self.egress == "pasta" else "1.1.1.1"
         component_args = [str(self.lab), "--instance", self.instance,
                           "--expose-address", self.expose_address]
+        clean_pasta = self.egress == "pasta" or pasta_cleanup_needed(
+            self.lab, self.instance, inspect_unit=False)
 
         if action == "start":
             commands = [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab), "--instance", self.instance],
-                network + ["down", str(self.lab)],
             ]
+            if clean_pasta:
+                commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
+            commands.append(network + ["down", str(self.lab)])
             if not (self.lab / "state/binary-bundle.json").is_file():
                 commands.extend([
                     workspace + ["sync", str(self.lab), "--ref", branch],
@@ -266,12 +270,15 @@ class LabRunner:
             commands = [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab), "--instance", self.instance],
+            ]
+            if clean_pasta:
+                commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
+            commands.extend([
                 network + ["down", str(self.lab)],
                 identity + ["rotate", str(self.lab), "--fallback", self.instance],
                 network + ["up", str(self.lab)],
                 netns_dns + ["up", str(self.lab), "--nameserver", dns_server],
-            ]
+            ])
             if self.egress == "pasta":
                 commands.append(pasta + ["snapshot", str(self.lab)])
                 commands.append(pasta + ["up", str(self.lab), "--instance", self.instance])
@@ -283,13 +290,17 @@ class LabRunner:
         if action == "fetch":
             return [workspace + ["sync", str(self.lab), "--ref", branch]]
         if action == "stop":
-            return [
+            commands = [
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
-                pasta + ["down", str(self.lab), "--instance", self.instance],
+            ]
+            if clean_pasta:
+                commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
+            commands.extend([
                 network + ["down", str(self.lab)],
                 netns_dns + ["down", str(self.lab)],
-            ]
+            ])
+            return commands
         return [components + ["status", *component_args]]
 
     def _env(self) -> dict[str, str]:
