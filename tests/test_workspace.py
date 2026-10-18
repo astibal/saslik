@@ -69,11 +69,12 @@ class WorkspaceTests(unittest.TestCase):
             self.assertFalse((checkout / "untracked.txt").exists())
             self.assertEqual("keep\n", preserved.read_text(encoding="utf-8"))
 
-    def test_sync_can_preserve_a_cloned_dirty_checkout(self):
+    @patch("saslik.workspace._run")
+    def test_sync_can_preserve_a_cloned_dirty_checkout_on_same_branch(self, run):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory) / "smithproxy"
             checkout.mkdir()
-            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
             tracked = checkout / "tracked.txt"
             tracked.write_text("original\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
@@ -86,6 +87,44 @@ class WorkspaceTests(unittest.TestCase):
             _sync_checkout(checkout, "unused", "main", preserve_dirty=True)
 
             self.assertEqual("keep my work\n", tracked.read_text(encoding="utf-8"))
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn(["git", "-C", str(checkout), "merge", "--ff-only", "FETCH_HEAD"],
+                          commands)
+
+    def test_sync_fast_forwards_same_branch_around_non_conflicting_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / "remote.git"
+            upstream = root / "upstream"
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+            for name, content in (("local.txt", "original\n"), ("remote.txt", "v1\n")):
+                (upstream / name).write_text(content, encoding="utf-8")
+            subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
+            subprocess.run([
+                "git", "-C", str(upstream), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+            ], check=True)
+            subprocess.run(["git", "-C", str(upstream), "remote", "add", "origin", str(remote)],
+                           check=True)
+            subprocess.run(["git", "-C", str(upstream), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+            subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(checkout)],
+                           check=True)
+            (checkout / "local.txt").write_text("my work\n", encoding="utf-8")
+            (upstream / "remote.txt").write_text("v2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(upstream), "add", "remote.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(upstream), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "remote update",
+            ], check=True)
+            subprocess.run(["git", "-C", str(upstream), "push", "-q"], check=True)
+
+            _sync_checkout(checkout, str(remote), "main")
+
+            self.assertEqual("my work\n", (checkout / "local.txt").read_text(encoding="utf-8"))
+            self.assertEqual("v2\n", (checkout / "remote.txt").read_text(encoding="utf-8"))
 
     def test_binary_bundle_round_trip_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:

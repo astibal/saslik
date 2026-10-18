@@ -35,6 +35,9 @@ from .workspace import component_source_status, source_changes
 from .version import saslik_version_status
 from .files import (delete_path, file_revision, list_directory, make_directory,
                     read_file, target_path, write_file)
+from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
+                  list_patches, reapply_patch, remember_applied_patch,
+                  revert_all_patches, revert_patch)
 
 
 APP_BROWSERS = (
@@ -156,9 +159,10 @@ def app_launch_command(url: str) -> str:
 
 
 class SaslikServer(ThreadingHTTPServer):
-    def __init__(self, address, runner: LabRunner):
+    def __init__(self, address, runner: LabRunner, *, devel: bool = False):
         super().__init__(address, Handler)
         self.runner = runner
+        self.devel = devel
         self.csrf = secrets.token_urlsafe(24)
         self.cli_sessions: dict[str, CliSession] = {}
         self.cli_lock = threading.Lock()
@@ -238,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             return self._json(self.server.runner.snapshot())
         if path == "/api/session":
-            return self._json({"csrf": self.server.csrf})
+            return self._json({"csrf": self.server.csrf, "devel": self.server.devel})
         if path == "/api/identity":
             services = self.server.runner._service_status()
             running = self.server.runner.operation_running() or any(
@@ -257,6 +261,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._files_read(parsed.query)
         if path == "/api/files/download":
             return self._files_download(parsed.query)
+        if path == "/api/dev/patches":
+            if not self.server.devel:
+                return self._json({"error": "Dev režim není povolený."},
+                                  HTTPStatus.FORBIDDEN)
+            workspace = parse_qs(parsed.query).get("workspace", [""])[0]
+            lab, _ = self._workspace_target(workspace)
+            return self._json({"patches": list_patches(lab)})
         if path == "/api/workspace/settings":
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
@@ -470,6 +481,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._spider_bootstrap_redeem()
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
+        if path == "/api/dev/patch" and not self.server.devel:
+            return self._json({"error": "Dev režim není povolený. Spusť Saslik s --devel."},
+                              HTTPStatus.FORBIDDEN)
         if path == "/api/binary/load":
             return self._binary_load()
         if path == "/api/binary/clear":
@@ -479,12 +493,13 @@ class Handler(BaseHTTPRequestHandler):
         if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
                         "/api/workspace/action", "/api/workspace/settings",
                         "/api/crashes/clear", "/api/crashes/diagnose",
-                        "/api/spider/bootstrap", "/api/files/action"}:
+                        "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
             limit = (24 * 1024 * 1024 if path == "/api/identity/action" else
-                     3 * 1024 * 1024 if path == "/api/files/action" else 4096)
+                     3 * 1024 * 1024 if path == "/api/files/action" else
+                     2 * MAX_PATCH_BYTES + 65536 if path == "/api/dev/patch" else 4096)
             if declared > limit:
                 return self._json({"error": "Požadavek je příliš velký."},
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
@@ -496,6 +511,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._cli_write(body)
             if path == "/api/files/action":
                 return self._files_action(body)
+            if path == "/api/dev/patch":
+                lab, _ = self._workspace_target(str(body.get("workspace", "")))
+                operation = str(body.get("operation", "apply"))
+                if operation == "apply":
+                    result = apply_named_patch(
+                        lab, str(body.get("project", "")), str(body.get("patch", "")),
+                        str(body.get("name", "")))
+                elif operation == "remember-applied":
+                    result = remember_applied_patch(
+                        lab, str(body.get("project", "")), str(body.get("patch", "")),
+                        str(body.get("name", "")))
+                elif operation == "revert":
+                    result = revert_patch(lab, str(body.get("id", "")))
+                elif operation == "reapply":
+                    result = reapply_patch(lab, str(body.get("id", "")))
+                elif operation == "revert-all":
+                    result = {"reverted": revert_all_patches(lab)}
+                elif operation == "clear":
+                    result = {"cleared": clear_patch_history(lab)}
+                else:
+                    raise ValueError("Neznámá operace patch journalu.")
+                return self._json({"ok": True, "result": result,
+                                   "patches": list_patches(lab),
+                                   "source_changes": source_changes(lab)})
             if path == "/api/ca/action":
                 return self._ca_action(str(body.get("store", "")))
             if path == "/api/identity/action":
@@ -916,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
-          runner: LabRunner | None = None) -> None:
+          runner: LabRunner | None = None, *, devel: bool = False) -> None:
     try:
         loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -925,10 +964,12 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         print("VAROVÁNÍ: Saslik UI a laboratorní porty budou dostupné ze sítě.")
         print("Používej pouze důvěryhodnou laboratorní síť nebo host firewall.")
     active_runner = runner or LabRunner()
-    server = SaslikServer((host, port), active_runner)
+    server = SaslikServer((host, port), active_runner, devel=devel)
     server.start_guardian()
     url = f"http://{host}:{server.server_port}/"
     print(f"Saslik hoří na {url}")
+    if devel:
+        print("Dev režim je zapnutý; UI může měnit zdrojové checkouty workspace.")
     print(f"App okno spustíš ručně: {app_launch_command(url)}")
     print("Ctrl-C ukončí Saslik.")
     opened_with = open_frontend(url, display_mode)

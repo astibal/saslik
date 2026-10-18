@@ -9,6 +9,10 @@ class CliTests(unittest.TestCase):
     def test_browser_is_not_opened_by_default(self):
         self.assertEqual("none", parser().parse_args([]).display_mode)
 
+    def test_devel_mode_is_explicit(self):
+        self.assertFalse(parser().parse_args([]).devel)
+        self.assertTrue(parser().parse_args(["--devel"]).devel)
+
     @patch("saslik.cli.subprocess.run")
     @patch("saslik.cli.os.geteuid", return_value=0)
     def test_root_does_not_request_sudo(self, _geteuid, run):

@@ -143,13 +143,30 @@ def _sync_checkout(path: Path, repository: str, ref: str,
         check=True, text=True, stdout=subprocess.PIPE,
     ).stdout.strip()
     if changed:
-        if preserve_dirty:
-            print(f"Zachovávám přenesené lokální změny: {path}")
-            return
-        raise RuntimeError(
-            f"Zdrojový strom má lokální změny: {path}. "
-            "Můžeš je zahodit v kartě Logy."
-        )
+        branch = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+        if branch != ref:
+            raise RuntimeError(
+                f"Zdrojový strom {path} má lokální změny na větvi "
+                f"{branch or '(detached HEAD)'}, ale workspace používá {ref}. "
+                "Změny můžeš zahodit v kartě Logy nebo přepnout nastavenou větev."
+            )
+        print(f"Dirty strom na stejné větvi {ref}; zkouším aktualizaci přes --ff-only: {path}")
+        _run(["git", "-C", str(path), "remote", "set-url", "origin", repository])
+        _run(["git", "-C", str(path), "fetch", "origin", ref])
+        try:
+            _run(["git", "-C", str(path), "merge", "--ff-only", "FETCH_HEAD"])
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Lokální změny v {path} nelze čistě spojit s origin/{ref}; "
+                "pracovní strom zůstal zachovaný."
+            ) from exc
+        _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive"])
+        message = "Zachovávám přenesené" if preserve_dirty else "Zachovávám"
+        print(f"{message} lokální změny po aktualizaci {ref}: {path}")
+        return
     # Managed checkouts follow the configured repository.  This also migrates
     # older HTTPS viewer checkouts to SSH without deleting local objects.
     _run(["git", "-C", str(path), "remote", "set-url", "origin", repository])

@@ -27,6 +27,8 @@ def acquire_privileges() -> None:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(prog="saslik", description="Smithproxy + Spider + Sift micro-launcher")
     value.add_argument("-i", "--instance", help="pojmenovaný lab (default: naposledy použitý)")
+    value.add_argument("--devel", action="store_true",
+                       help="zpřístupnit vývojářské nástroje včetně patchování zdrojů")
     display = value.add_mutually_exclusive_group()
     display.add_argument("--browser", action="store_const", const="browser", dest="display_mode",
                          help="otevřít v běžném výchozím browseru")
@@ -74,6 +76,6 @@ def main(argv: list[str] | None = None) -> int:
     acquire_privileges()
     if args.command in {None, "web"}:
         serve(web_host, getattr(args, "port", 8765),
-              getattr(args, "display_mode", "app"), runner)
+              getattr(args, "display_mode", "app"), runner, devel=args.devel)
         return 0
     return runner.run_console(args.command, getattr(args, "branch", "master"))
