@@ -93,6 +93,19 @@ new file mode 100644
                 apply_text_patch(lab, "smithproxy", patch)
             self.assertFalse((root / "outside").exists())
 
+    def test_reports_truncated_hunk_clearly(self):
+        patch = """diff --git a/hello.txt b/hello.txt
+--- a/hello.txt
++++ b/hello.txt
+@@ -1,2 +1,2 @@
+-old
++new
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            lab, _ = self.make_checkout(Path(directory))
+            with self.assertRaisesRegex(ValueError, "Neúplný hunk.*1/1"):
+                apply_text_patch(lab, "smithproxy", patch)
+
     def test_rejects_unknown_project(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):

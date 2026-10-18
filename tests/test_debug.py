@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.debug import component_binary, debug_unit, start_gdbserver
+from saslik.debug import (component_binary, debug_unit, gdb_client_arguments,
+                          start_gdbserver)
 
 
 class DebugTests(unittest.TestCase):
@@ -18,6 +19,16 @@ class DebugTests(unittest.TestCase):
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"binary")
             self.assertEqual(binary, component_binary(lab, "smithproxy"))
+
+    def test_gdb_client_uses_non_disruptive_lab_defaults(self):
+        command = gdb_client_arguments("gdb", Path("/tmp/smithproxy"), 23450)
+        expressions = [command[index + 1] for index, value in enumerate(command[:-1])
+                       if value == "-ex"]
+        self.assertIn("set pagination off", expressions)
+        self.assertIn("set confirm off", expressions)
+        self.assertIn("set print pretty on", expressions)
+        self.assertIn("handle SIGPIPE nostop noprint pass", expressions)
+        self.assertEqual("target remote 127.0.0.1:23450", expressions[-1])
 
     @patch("saslik.debug.subprocess.run")
     @patch("saslik.debug.shutil.which", return_value="/usr/bin/gdbserver")

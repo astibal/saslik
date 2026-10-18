@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ PROJECTS = {
 }
 MAX_PATCH_BYTES = 1024 * 1024
 _PATCH_LOCK = threading.Lock()
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def normalize_text_patch(patch: str) -> str:
@@ -64,7 +66,42 @@ def _validated_patch(patch: str) -> str:
         raise ValueError("Patch je větší než 1 MiB.")
     if b"\0" in payload:
         raise ValueError("Patch obsahuje neplatná binární data.")
+    _validate_hunks(patch)
     return patch
+
+
+def _validate_hunks(patch: str) -> None:
+    """Report truncated textual hunks before git emits a vague error."""
+    lines = patch.splitlines()
+    index = 0
+    while index < len(lines):
+        match = _HUNK_HEADER.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        header_line = index + 1
+        expected_old = int(match.group(2) or 1)
+        expected_new = int(match.group(4) or 1)
+        old_count = new_count = 0
+        index += 1
+        while index < len(lines) and not lines[index].startswith(("@@ ", "diff --git ")):
+            line = lines[index]
+            if line.startswith("\\ No newline at end of file"):
+                index += 1
+                continue
+            if not line or line[0] not in " +-":
+                raise ValueError(
+                    f"Neplatný diff řádek {index + 1}: chybí prefix mezera, + nebo -.")
+            if line[0] != "+":
+                old_count += 1
+            if line[0] != "-":
+                new_count += 1
+            index += 1
+        if old_count != expected_old or new_count != expected_new:
+            raise ValueError(
+                f"Neúplný hunk na řádku {header_line}: hlavička očekává "
+                f"{expected_old}/{expected_new} řádků, patch obsahuje "
+                f"{old_count}/{new_count}.")
 
 
 def _git_apply(root: Path, patch: str, *, reverse: bool = False,

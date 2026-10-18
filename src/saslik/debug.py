@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,6 +15,25 @@ DEBUG_COMPONENTS = {
     "pcap-viewer": ("runtime/pcap-viewer-venv/bin/capture-viewer", 23453),
     "pcap-storage": ("runtime/pcap-viewer-venv/bin/capture-storage", 23454),
 }
+GDB_DEFAULT_COMMANDS = (
+    "set pagination off",
+    "set height 0",
+    "set width 0",
+    "set confirm off",
+    "set print pretty on",
+    "set print thread-events off",
+    "set breakpoint pending on",
+    "set debuginfod enabled off",
+    "handle SIGPIPE nostop noprint pass",
+)
+
+
+def gdb_client_arguments(gdb: str, binary: Path, port: int) -> list[str]:
+    command = [gdb, "-q", str(binary)]
+    for setting in GDB_DEFAULT_COMMANDS:
+        command.extend(("-ex", setting))
+    command.extend(("-ex", f"target remote 127.0.0.1:{port}"))
+    return command
 
 
 def debug_unit(instance: str, component: str) -> str:
@@ -87,6 +107,6 @@ def debug_status(lab: Path, instance: str) -> list[dict[str, object]]:
             "pid": pid or None,
             "port": port,
             "binary": str(binary) if binary else "",
-            "command": f"gdb -q {binary} -ex 'target remote 127.0.0.1:{port}'" if binary else "",
+            "command": shlex.join(gdb_client_arguments("gdb", binary, port)) if binary else "",
         })
     return result

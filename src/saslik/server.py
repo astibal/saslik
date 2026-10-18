@@ -39,7 +39,7 @@ from .files import (delete_path, file_revision, list_directory, make_directory,
 from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
                   revert_all_patches, revert_patch)
-from .debug import DEBUG_COMPONENTS, component_binary, debug_status
+from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 
 
 APP_BROWSERS = (
@@ -296,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.FORBIDDEN)
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, name = self._workspace_target(workspace)
-            return self._json({"components": debug_status(lab, name)})
+            return self._json(self._debug_payload(lab, name))
         if path == "/api/dev/gdb/session":
             if not self.server.devel:
                 return self._json({"error": "Dev režim není povolený."},
@@ -580,8 +580,7 @@ class Handler(BaseHTTPRequestHandler):
                         f"gdb-{operation}", Instance(instance, self.server.runner.egress),
                         component=component):
                     raise RuntimeError("Privilegovaný GDB helper operaci odmítl.")
-                return self._json({"ok": True,
-                                   "components": debug_status(lab, instance)})
+                return self._json({"ok": True, **self._debug_payload(lab, instance)})
             if path == "/api/dev/gdb/session":
                 return self._gdb_session(body)
             if path == "/api/ca/action":
@@ -945,7 +944,7 @@ class Handler(BaseHTTPRequestHandler):
             master, slave = pty.openpty()
             try:
                 process = subprocess.Popen(
-                    [gdb, "-q", str(binary), "-ex", f"target remote 127.0.0.1:{port}"],
+                    gdb_client_arguments(gdb, binary, port),
                     stdin=slave, stdout=slave, stderr=slave, close_fds=True,
                     start_new_session=True,
                 )
@@ -967,6 +966,18 @@ class Handler(BaseHTTPRequestHandler):
             session.close()
             return self._json({"ok": True})
         return self._json({"error": "Neznámá GDB akce."}, HTTPStatus.BAD_REQUEST)
+
+    def _debug_payload(self, lab: Path, instance: str) -> dict[str, object]:
+        address = ipaddress.ip_address(self.client_address[0])
+        local_client = address.is_loopback or bool(
+            address.version == 6 and address.ipv4_mapped and address.ipv4_mapped.is_loopback)
+        components = debug_status(lab, instance)
+        if not local_client:
+            # A loopback command copied to a remote workstation is misleading.
+            # The embedded console still runs GDB on the Saslik host.
+            for component in components:
+                component["command"] = ""
+        return {"components": components, "local_client": local_client}
 
     def _gdb_read(self, session_id: str) -> None:
         session = self.server.gdb_sessions.get(session_id)
