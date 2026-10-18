@@ -32,6 +32,7 @@ from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
 from .workspace import component_source_status, source_changes
+from .version import saslik_version_status
 from .files import (delete_path, file_revision, list_directory, make_directory,
                     read_file, target_path, write_file)
 
@@ -269,6 +270,11 @@ class Handler(BaseHTTPRequestHandler):
             lab, _ = self._workspace_target(workspace)
             try:
                 return self._json(component_source_status(lab, component))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                return self._json({"state": "error", "detail": str(exc)})
+        if path == "/api/version/status":
+            try:
+                return self._json(saslik_version_status())
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 return self._json({"state": "error", "detail": str(exc)})
         if path == "/api/crashes/files":
