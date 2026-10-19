@@ -40,12 +40,31 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
+from .network import HOST_IF, NS_ADDR
 
 
 APP_BROWSERS = (
     "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
     "microsoft-edge", "microsoft-edge-stable", "brave-browser", "vivaldi-stable", "vivaldi",
 )
+
+
+def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
+    """Describe the directly-connected lab ingress without configuring the client."""
+    ifindex = network_root / HOST_IF / "ifindex"
+    try:
+        generation = ifindex.read_text(encoding="ascii").strip()
+        available = True
+    except OSError:
+        generation, available = "", False
+    return {
+        "version": 1,
+        "available": available,
+        "workspace": workspace,
+        "gateway": NS_ADDR,
+        "host_interface": HOST_IF,
+        "generation": generation,
+    }
 
 
 @dataclass
@@ -263,6 +282,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/status":
             return self._json(self.server.runner.snapshot())
+        if path == "/api/skewer":
+            return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
         if path == "/api/session":
             return self._json({"csrf": self.server.csrf, "devel": self.server.devel})
         if path == "/api/identity":

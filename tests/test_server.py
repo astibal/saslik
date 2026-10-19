@@ -1,8 +1,10 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
-                           app_launch_command, open_frontend)
+                           app_launch_command, open_frontend, skewer_discovery)
 
 
 class DummySocket:
@@ -54,6 +56,28 @@ class ResponseTests(unittest.TestCase):
         handler.wfile = BrokenWriter()
 
         handler._json({"data": "", "closed": False})
+
+
+class SkewerDiscoveryTests(unittest.TestCase):
+    def test_interface_ifindex_is_a_reconnect_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            interface = root / "sxp-test0"
+            interface.mkdir()
+            (interface / "ifindex").write_text("846\n", encoding="ascii")
+
+            value = skewer_discovery("lab1", root)
+
+            self.assertTrue(value["available"])
+            self.assertEqual("10.254.77.2", value["gateway"])
+            self.assertEqual("sxp-test0", value["host_interface"])
+            self.assertEqual("846", value["generation"])
+
+    def test_missing_interface_reports_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = skewer_discovery("lab1", Path(directory))
+        self.assertFalse(value["available"])
+        self.assertEqual("", value["generation"])
 
 
 class FrontendTests(unittest.TestCase):
