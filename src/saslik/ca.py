@@ -21,6 +21,8 @@ STORE_LABELS = {
     "firefox": "Firefox",
     "firefox-snap": "Firefox Snap",
     "firefox-flatpak": "Firefox Flatpak",
+    "thunderbird": "Thunderbird",
+    "thunderbird-snap": "Thunderbird Snap",
     "chromium": "Chromium / NSS",
     "chromium-snap": "Chromium Snap",
     "brave-snap": "Brave Snap",
@@ -34,6 +36,8 @@ def nss_databases() -> list[tuple[str, str, Path]]:
         ("firefox", "Firefox", Path.home() / ".mozilla/firefox"),
         ("firefox-snap", "Firefox Snap", Path.home() / "snap/firefox/common/.mozilla/firefox"),
         ("firefox-flatpak", "Firefox Flatpak", Path.home() / ".var/app/org.mozilla.firefox/.mozilla/firefox"),
+        ("thunderbird", "Thunderbird", Path.home() / ".thunderbird"),
+        ("thunderbird-snap", "Thunderbird Snap", Path.home() / "snap/thunderbird/common/.thunderbird"),
     )
     seen: set[Path] = set()
     for key, browser, root in firefox_roots:
@@ -104,7 +108,8 @@ def store_status(instance: Instance) -> list[dict]:
     for key, _label, database in nss_databases():
         grouped.setdefault(key, []).append(database)
     result = []
-    for key in ("firefox", "firefox-snap", "firefox-flatpak", "chromium",
+    for key in ("firefox", "firefox-snap", "firefox-flatpak", "thunderbird",
+                "thunderbird-snap", "chromium",
                 "chromium-snap", "brave-snap"):
         databases = grouped.get(key, [])
         installed = 0

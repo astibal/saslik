@@ -7,6 +7,22 @@ from saslik.ca import nss_databases
 
 
 class CaStoreTests(unittest.TestCase):
+    def test_thunderbird_and_snap_profiles_are_discovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            native = home / ".thunderbird/native.default-release"
+            snap = home / "snap/thunderbird/common/.thunderbird/snap.default-release"
+            native.mkdir(parents=True)
+            snap.mkdir(parents=True)
+            (native / "cert9.db").touch()
+            (snap / "cert9.db").touch()
+
+            with patch("saslik.ca.Path.home", return_value=home):
+                databases = nss_databases()
+
+            self.assertIn(("thunderbird", "Thunderbird", native.resolve()), databases)
+            self.assertIn(("thunderbird-snap", "Thunderbird Snap", snap.resolve()), databases)
+
     def test_all_retained_brave_snap_nss_databases_are_discovered(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
