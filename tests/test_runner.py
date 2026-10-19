@@ -1,4 +1,5 @@
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -151,6 +152,21 @@ class RunnerTests(unittest.TestCase):
                        if "restart-component" in command)
         self.assertLess(stop, install)
         self.assertLess(install, restart)
+
+    def test_component_control_uses_guardian_without_fresh_sudo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory), instance="lab1")
+            calls = []
+            runner.component_action = lambda action, component: calls.append(
+                (action, component)) or True
+            command = ["sudo", "-n", sys.executable, "-m", "saslik.components",
+                       "stop-component", runner.lab.as_posix(), "--instance", "lab1",
+                       "--component", "pcap-viewer"]
+            output = []
+            result = runner._run_commands([command], output.append)
+        self.assertEqual(0, result)
+        self.assertEqual([("stop-component", "pcap-viewer")], calls)
+        self.assertEqual(["$ guardian stop-component pcap-viewer"], output)
 
     @patch("saslik.runner.threading.Thread")
     def test_component_update_keeps_existing_connection_cards(self, thread):

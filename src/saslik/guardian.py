@@ -17,6 +17,9 @@ from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
 
 
+UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "pcap-viewer"}
+
+
 def cleanup(lab: Path, instance: str, expose_address: str) -> None:
     SystemdComponents(lab, instance, expose_address).down()
     routing_down()
@@ -69,6 +72,17 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     elif payload.get("action") == "gdb-stop":
                         stop_gdbserver(str(payload["instance"]),
                                        str(payload.get("component", "")))
+                    elif payload.get("action") in {"component-stop", "component-restart"}:
+                        component = str(payload.get("component", ""))
+                        if component not in UPDATABLE_COMPONENTS:
+                            raise RuntimeError("Komponenta není povolená.")
+                        manager = SystemdComponents(*target)
+                        if payload["action"] == "component-stop":
+                            manager.stop_component(component)
+                        else:
+                            manager.restart_component(component)
+                    else:
+                        raise RuntimeError("Neznámá guardian operace.")
                     connection.sendall(b'{"ok":true}\n')
                 except Exception as exc:
                     connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")

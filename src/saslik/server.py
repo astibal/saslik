@@ -1118,6 +1118,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
     active_runner = runner or LabRunner()
     server = SaslikServer((host, port), active_runner, devel=devel)
     server.start_guardian()
+    active_runner.component_action = lambda action, component: server.guardian_request(
+        f"component-{action.removesuffix('-component')}", component=component)
     url = f"http://{host}:{server.server_port}/"
     print(f"Saslik hoří na {url}")
     if devel:

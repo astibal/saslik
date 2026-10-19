@@ -95,6 +95,9 @@ class LabRunner:
         self._next_id = 1
         self._health_cache: tuple[float, dict] = (0.0, {})
         self._health_lock = threading.Lock()
+        # The web server supplies its long-lived privileged guardian here.
+        # Console-only commands retain the explicit sudo command path.
+        self.component_action: Callable[[str, str], bool] | None = None
 
     @property
     def spider(self) -> Path:
@@ -205,6 +208,14 @@ class LabRunner:
 
     def _run_commands(self, commands: list[list[str]], emit: Callable[[str], None]) -> int:
         for command in commands:
+            guardian_action = self._component_guardian_action(command)
+            if guardian_action is not None and self.component_action is not None:
+                action, component = guardian_action
+                emit(f"$ guardian {action} {component}")
+                if not self.component_action(action, component):
+                    emit(f"Saslik: guardian odmítl {action} komponenty {component}.")
+                    return 1
+                continue
             emit("$ " + " ".join(map(str, command)))
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, bufsize=1, env=self._env())
@@ -215,6 +226,19 @@ class LabRunner:
             if code:
                 return code
         return 0
+
+    @staticmethod
+    def _component_guardian_action(command: list[str]) -> tuple[str, str] | None:
+        """Recognize the two narrowly-scoped privileged component actions."""
+        try:
+            module = command.index("saslik.components")
+            action = command[module + 1]
+            component = command[command.index("--component") + 1]
+        except (ValueError, IndexError):
+            return None
+        if action not in {"stop-component", "restart-component"}:
+            return None
+        return action, component
 
     def _run_job(self, job_id: int, action: str, branch: str, template: str,
                  ca_cert: str, ca_key: str, component: str = "") -> None:
