@@ -30,7 +30,7 @@ COMPONENT_SOURCES = {
 }
 
 
-def component_source_status(lab: Path, component: str) -> dict[str, str]:
+def component_source_status(lab: Path, component: str) -> dict[str, object]:
     """Compare a managed checkout with its configured remote ref.
 
     The fetch uses a private tracking ref and does not touch FETCH_HEAD, so a
@@ -42,12 +42,10 @@ def component_source_status(lab: Path, component: str) -> dict[str, str]:
     path = lab.resolve() / "src" / checkout
     if not (path / ".git").exists():
         return {"state": "missing", "detail": "zdroj ještě není stažený"}
-    status = subprocess.run(
+    dirty = bool(subprocess.run(
         ["git", "-C", str(path), "status", "--porcelain"],
         check=True, text=True, stdout=subprocess.PIPE, timeout=5,
-    ).stdout.strip()
-    if status:
-        return {"state": "dirty", "detail": "lokální změny"}
+    ).stdout.strip())
     ref = str(setting_value(lab, ref_setting))
     tracking = f"refs/saslik/source-status/{component}"
     environment = os.environ.copy()
@@ -68,19 +66,25 @@ def component_source_status(lab: Path, component: str) -> dict[str, str]:
         text=True, stdout=subprocess.PIPE, timeout=5,
     ).stdout.strip()
     if head == remote:
-        return {"state": "current", "detail": "aktuální"}
+        state, detail = "current", "upstream aktuální"
+        return {"state": state, "dirty": dirty,
+                "detail": f"lokální změny · {detail}" if dirty else "aktuální"}
     behind = subprocess.run(
         ["git", "-C", str(path), "merge-base", "--is-ancestor", "HEAD", tracking],
         timeout=5,
     ).returncode == 0
     if behind:
-        return {"state": "behind", "detail": "je dostupná novější verze"}
+        detail = "je dostupná novější verze"
+        return {"state": "behind", "dirty": dirty,
+                "detail": f"lokální změny · {detail}" if dirty else detail}
     ahead = subprocess.run(
         ["git", "-C", str(path), "merge-base", "--is-ancestor", tracking, "HEAD"],
         timeout=5,
     ).returncode == 0
-    return {"state": "ahead" if ahead else "diverged",
-            "detail": "lokálně napřed" if ahead else "větev se rozešla"}
+    state = "ahead" if ahead else "diverged"
+    detail = "lokálně napřed" if ahead else "větev se rozešla"
+    return {"state": state, "dirty": dirty,
+            "detail": f"lokální změny · {detail}" if dirty else detail}
 
 
 def source_changes(lab: Path) -> list[str]:

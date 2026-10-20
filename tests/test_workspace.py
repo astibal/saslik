@@ -36,6 +36,23 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("+master:refs/saslik/source-status/smithproxy", fetch)
 
     @patch("saslik.workspace.subprocess.run")
+    def test_component_source_status_reports_dirty_and_behind_independently(self, run):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout=" M local.cpp\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0, stdout="local\n"),
+            subprocess.CompletedProcess([], 0, stdout="remote\n"),
+            subprocess.CompletedProcess([], 0),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "src/smithproxy/.git").mkdir(parents=True)
+            result = component_source_status(lab, "smithproxy")
+        self.assertEqual("behind", result["state"])
+        self.assertTrue(result["dirty"])
+        self.assertEqual("lokální změny · je dostupná novější verze", result["detail"])
+
+    @patch("saslik.workspace.subprocess.run")
     def test_git_is_noninteractive_and_uses_ssh_agent(self, run):
         _run(["git", "fetch", "origin", "main"])
         environment = run.call_args.kwargs["env"]

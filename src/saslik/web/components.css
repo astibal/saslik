@@ -24,6 +24,7 @@
 .component-row > strong > [data-source-status]:not(:disabled):hover { text-decoration:underline; }
 .component-row > strong > [data-source-status].state-current { color: var(--green); }
 .component-row > strong > [data-source-status].state-behind { color: #f3b54a; }
+.component-row > strong > [data-source-status].has-local-changes { color: var(--hot); }
 .component-row > strong > [data-source-status].state-dirty,
 .component-row > strong > [data-source-status].state-diverged,
 .component-row > strong > [data-source-status].state-error { color: #ff6688; }

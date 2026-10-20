@@ -205,6 +205,7 @@ class SaslikServer(ThreadingHTTPServer):
         self.gdb_sessions: dict[str, GdbSession] = {}
         self.cli_lock = threading.Lock()
         self.spider_bootstraps = SpiderBootstrapStore()
+        self.skewer_last_seen = 0.0
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -281,8 +282,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/status":
-            return self._json(self.server.runner.snapshot())
+            snapshot = self.server.runner.snapshot()
+            snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 6.0
+            return self._json(snapshot)
         if path == "/api/skewer":
+            self.server.skewer_last_seen = time.monotonic()
             return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
         if path == "/api/session":
             return self._json({"csrf": self.server.csrf, "devel": self.server.devel})
