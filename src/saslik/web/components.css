@@ -3,6 +3,71 @@
     grid-template-columns: minmax(120px, .8fr) 72px minmax(180px, 1.4fr) minmax(130px, .7fr) 105px;
 }
 
+.state-cluster {
+    display: grid;
+    justify-items: center;
+    gap: 3px;
+}
+
+.card-font-tools {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: #68717a;
+}
+
+.card-font-tools button {
+    width: 24px;
+    height: 17px;
+    padding: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: #7e878f;
+    font: 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.card-font-tools button:hover {
+    background: #20242a;
+    color: var(--text);
+}
+
+.card-font-tools output {
+    min-width: 31px;
+    text-align: center;
+    font-size: 7px;
+}
+
+/* API previews should read as data surfaces, not as another bright application. */
+.endpoint-api .card[data-scene]::after {
+    opacity: .3;
+    filter: grayscale(.35) sepia(.18) hue-rotate(155deg) saturate(1.25) contrast(1.3) brightness(.55);
+}
+
+.endpoint-api .card[data-scene]:hover::after {
+    opacity: .43;
+    filter: grayscale(.2) sepia(.12) hue-rotate(155deg) saturate(1.35) contrast(1.25) brightness(.64);
+}
+
+.endpoint-api .card[data-scene="smithproxy_api"]::after {
+    opacity: .48;
+    filter: saturate(.75) contrast(1.18) brightness(.78);
+}
+
+.endpoint-api .card[data-scene="smithproxy_api"]:hover::after {
+    opacity: .62;
+    filter: saturate(.9) contrast(1.18) brightness(.9);
+}
+
+.endpoint-api .card[data-scene="sift"]::after {
+    opacity: .42;
+    filter: invert(.9) hue-rotate(165deg) saturate(.75) contrast(1.2) brightness(.55);
+}
+
+.endpoint-api .card[data-scene="sift"]:hover::after {
+    opacity: .56;
+    filter: invert(.9) hue-rotate(165deg) saturate(.9) contrast(1.15) brightness(.65);
+}
+
 .component-row > button[data-component-update] {
     height: 30px;
     padding: 0 9px;
@@ -33,3 +98,97 @@
     .component-row { grid-template-columns: 1fr 70px; }
     .component-row > button[data-component-update] { justify-self: end; }
 }
+
+/* Certificate stores are grouped by application; buttons remain per concrete
+   NSS/system store because each variant has a separate installation action. */
+.ca-stores {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 9px;
+}
+
+.ca-family {
+    position: relative;
+    min-width: 0;
+    padding: 10px 10px 38px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: linear-gradient(145deg, #15191d, #101316);
+}
+
+.ca-family > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 0 2px 8px;
+    border-bottom: 1px solid #272d32;
+}
+
+.ca-family > header > span { display: flex; align-items: center; gap: 7px; }
+.ca-family > header img { width: 22px; height: 22px; object-fit: contain; }
+.ca-family > header b { font-size: 13px; }
+.ca-family > header small { color: var(--muted); font: 11px system-ui, sans-serif; }
+.ca-family-title { min-width: 0; }
+.card-help-wrap {
+    position: absolute !important;
+    z-index: 12 !important;
+    right: 8px;
+    bottom: 8px;
+}
+.ca-corner-help { right: 9px; bottom: 9px; }
+.card-help {
+    display: grid;
+    width: 19px;
+    height: 19px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid #3b4248;
+    border-radius: 50%;
+    background: #1a1f23;
+    color: #aeb6bc;
+    font: 700 11px system-ui, sans-serif;
+}
+.card-help:hover, .card-help:focus-visible { border-color: var(--hot); color: var(--hot); }
+.card-balloon {
+    position: absolute;
+    z-index: 20;
+    right: 0;
+    bottom: 27px;
+    display: none;
+    width: min(310px, calc(100vw - 55px));
+    padding: 11px 13px;
+    border: 1px solid #594034;
+    border-radius: 8px;
+    background: #211a17;
+    box-shadow: 0 12px 30px #000a;
+    color: #d7dbde;
+    font: 12px/1.45 system-ui, sans-serif;
+}
+.card-balloon::after {
+    position: absolute;
+    top: 100%;
+    right: 4px;
+    border: 6px solid transparent;
+    border-top-color: #594034;
+    content: '';
+}
+.card-help-wrap:hover .card-balloon,
+.card-help-wrap:focus-within .card-balloon { display: block; }
+.ca-family-actions { margin-left: auto; }
+.ca-family-actions button {
+    padding: 5px 8px;
+    border-color: #51303a;
+    background: #26171c;
+    color: #ff7693;
+    font-size: 10px;
+}
+.ca-family-actions button:hover:not(:disabled) { background: #352027; }
+.ca-family-actions button:disabled { border-color: var(--line); background: transparent; color: #555d64; }
+.ca-family:not(.complete) > header img { filter: grayscale(.55); opacity: .68; }
+.ca-family.complete > header img { filter: drop-shadow(0 0 5px #58d99a55); }
+.ca-family > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.ca-family .ca-store { flex: 1 1 108px; min-width: 108px; min-height: 50px; padding: 8px 10px; }
+.ca-family .ca-store b { font-size: 12px; }
+.ca-family .ca-store small { font-size: 10px; line-height: 1.25; }

@@ -4,16 +4,46 @@ import argparse
 import ipaddress
 import os
 import subprocess
+import threading
 
 from .instance import Instance, remember_instance, remembered_instance
 from .runner import LabRunner, ensure_friendly_data_link
 from .server import serve
 
 
-def acquire_privileges() -> None:
-    """Acquire one sudo ticket before browser actions start."""
+class SudoLease:
+    """Keep the user's sudo timestamp alive only while Saslik is running."""
+
+    def __init__(self, enabled: bool, interval: float = 45.0) -> None:
+        self.enabled = enabled
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "SudoLease":
+        if self.enabled:
+            self._thread = threading.Thread(target=self._keepalive,
+                                            name="saslik-sudo-lease", daemon=True)
+            self._thread.start()
+        return self
+
+    def _keepalive(self) -> None:
+        while not self._stop.wait(self.interval):
+            subprocess.run(
+                ["sudo", "-n", "-v"], check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+
+
+def acquire_privileges() -> SudoLease:
+    """Acquire and maintain one sudo ticket for the foreground lifetime."""
     if os.geteuid() == 0:
-        return
+        return SudoLease(False)
     print("Saslik potřebuje sudo pro network namespace, rozhraní a routování.")
     print("Teď si jednou vyžádá heslo; jednotlivé akce už poběží bez dalších dotazů.")
     try:
@@ -22,6 +52,7 @@ def acquire_privileges() -> None:
         raise RuntimeError("Příkaz sudo není nainstalovaný.") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("Sudo oprávnění se nepodařilo získat.") from exc
+    return SudoLease(True).start()
 
 
 def parser() -> argparse.ArgumentParser:
@@ -73,9 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     runner = LabRunner(instance.data_dir.parent, instance=instance.name, egress=instance.egress,
                        expose_address=expose_address)
     runner.lab = instance.data_dir
-    acquire_privileges()
-    if args.command in {None, "web"}:
-        serve(web_host, getattr(args, "port", 8765),
-              getattr(args, "display_mode", "app"), runner, devel=args.devel)
-        return 0
-    return runner.run_console(args.command, getattr(args, "branch", "master"))
+    lease = acquire_privileges()
+    try:
+        if args.command in {None, "web"}:
+            serve(web_host, getattr(args, "port", 8765),
+                  getattr(args, "display_mode", "app"), runner, devel=args.devel)
+            return 0
+        return runner.run_console(args.command, getattr(args, "branch", "master"))
+    finally:
+        lease.close()

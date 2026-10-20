@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, urlparse
 
 from .runner import LabRunner, data_root
-from .ca import install_store, store_status
+from .ca import install_store, remove_store, store_status
 from .instance import Instance, remember_instance
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
@@ -609,7 +609,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/dev/gdb/session":
                 return self._gdb_session(body)
             if path == "/api/ca/action":
-                return self._ca_action(str(body.get("store", "")))
+                return self._ca_action(str(body.get("store", "")),
+                                       str(body.get("operation", "install")))
             if path == "/api/identity/action":
                 return self._identity_action(str(body.get("operation", "activate")),
                                              str(body.get("identity", "")),
@@ -905,24 +906,30 @@ class Handler(BaseHTTPRequestHandler):
             raise RuntimeError(result.stderr.strip() or "Přepnutí identity selhalo.")
         self._json({"ok": True, "identity": identity})
 
-    def _ca_action(self, store: str) -> None:
+    def _ca_action(self, store: str, operation: str = "install") -> None:
+        if operation not in {"install", "remove"}:
+            raise ValueError("Neznámá operace s CA store.")
         instance = Instance(self.server.runner.instance, self.server.runner.egress)
         if store == "system":
             pkexec = shutil.which("pkexec")
             source = self.server.runner.lab / "state/certs/default/ca-cert.pem"
             if pkexec:
                 command = [pkexec, sys.executable, "-m", "saslik.ca", "-i", instance.name,
-                           "system-install", "--certificate", str(source)]
+                           "system-install" if operation == "install" else "system-remove"]
+                if operation == "install":
+                    command += ["--certificate", str(source)]
             elif shutil.which("sudo") and os.environ.get("SUDO_ASKPASS"):
                 command = ["sudo", "-A", sys.executable, "-m", "saslik.ca", "-i", instance.name,
-                           "system-install", "--certificate", str(source)]
+                           "system-install" if operation == "install" else "system-remove"]
+                if operation == "install":
+                    command += ["--certificate", str(source)]
             else:
                 raise RuntimeError("Chybí pkexec nebo nakonfigurovaný SUDO_ASKPASS.")
             subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
             return self._json({"pending": True}, HTTPStatus.ACCEPTED)
-        count = install_store(instance, store)
-        self._json({"installed": count})
+        count = install_store(instance, store) if operation == "install" else remove_store(instance, store)
+        self._json({"installed" if operation == "install" else "removed": count})
 
     def _cli_write(self, body: dict) -> None:
         action = str(body.get("action", ""))

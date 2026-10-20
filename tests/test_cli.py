@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from saslik.cli import acquire_privileges, parser
+from saslik.cli import SudoLease, acquire_privileges, parser
 
 
 class CliTests(unittest.TestCase):
@@ -16,14 +16,26 @@ class CliTests(unittest.TestCase):
     @patch("saslik.cli.subprocess.run")
     @patch("saslik.cli.os.geteuid", return_value=0)
     def test_root_does_not_request_sudo(self, _geteuid, run):
-        acquire_privileges()
+        lease = acquire_privileges()
         run.assert_not_called()
+        self.assertFalse(lease.enabled)
 
     @patch("saslik.cli.subprocess.run")
     @patch("saslik.cli.os.geteuid", return_value=1000)
     def test_user_acquires_sudo_ticket(self, _geteuid, run):
-        acquire_privileges()
+        lease = acquire_privileges()
+        lease.close()
         run.assert_called_once_with(["sudo", "-v"], check=True)
+
+    @patch("saslik.cli.subprocess.run")
+    def test_sudo_lease_refresh_is_noninteractive(self, run):
+        lease = SudoLease(True)
+        with patch.object(lease._stop, "wait", side_effect=[False, True]):
+            lease._keepalive()
+        run.assert_called_once_with(
+            ["sudo", "-n", "-v"], check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
     @patch("saslik.cli.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["sudo", "-v"]))
     @patch("saslik.cli.os.geteuid", return_value=1000)

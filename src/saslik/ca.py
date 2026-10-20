@@ -17,16 +17,29 @@ def nickname(instance: str) -> str:
     return f"Saslik {instance} CA"
 
 
-STORE_LABELS = {
-    "firefox": "Firefox",
-    "firefox-snap": "Firefox Snap",
-    "firefox-flatpak": "Firefox Flatpak",
-    "thunderbird": "Thunderbird",
-    "thunderbird-snap": "Thunderbird Snap",
-    "chromium": "Chromium / NSS",
-    "chromium-snap": "Chromium Snap",
-    "brave-snap": "Brave Snap",
-    "system": "Systémový store",
+STORE_DEFINITIONS = {
+    "firefox": {"label": "Firefox", "family": "Firefox", "variant": "Native"},
+    "firefox-snap": {"label": "Firefox Snap", "family": "Firefox", "variant": "Snap"},
+    "firefox-flatpak": {"label": "Firefox Flatpak", "family": "Firefox", "variant": "Flatpak"},
+    "librewolf": {"label": "LibreWolf", "family": "LibreWolf", "variant": "Native"},
+    "librewolf-flatpak": {"label": "LibreWolf Flatpak", "family": "LibreWolf", "variant": "Flatpak"},
+    "chromium": {"label": "Chromium family / NSS", "family": "Chromium family", "variant": "Shared NSS"},
+    "chromium-snap": {"label": "Chromium Snap", "family": "Chromium", "variant": "Snap"},
+    "brave-snap": {"label": "Brave Snap", "family": "Brave", "variant": "Snap"},
+    "thunderbird": {"label": "Thunderbird", "family": "Thunderbird", "variant": "Native"},
+    "thunderbird-snap": {"label": "Thunderbird Snap", "family": "Thunderbird", "variant": "Snap"},
+    "system": {"label": "Systémový store", "family": "System", "variant": "Ubuntu"},
+}
+STORE_LABELS = {key: value["label"] for key, value in STORE_DEFINITIONS.items()}
+
+FAMILY_DESCRIPTIONS = {
+    "Firefox": "Přidá CA do všech nalezených profilů Firefoxu. HTTPS provoz přes Smithproxy pak otevřeš bez varování o nedůvěryhodném certifikátu.",
+    "LibreWolf": "Přidá CA do izolovaných profilů LibreWolfu. Zachová jeho vlastní trust store a zpřístupní v něm TLS inspekci labu.",
+    "Chromium family": "Nastaví sdílený linuxový NSS store pro Chromium, Chrome, Vivaldi a Edge. Jedna instalace tak obslouží více nativních browserů.",
+    "Chromium": "Nastaví NSS důvěru pro Chromium a další browsery postavené na Chromiu.",
+    "Brave": "Přidá CA do izolovaného Brave Snap store, včetně ponechaných revizí. TLS inspekce přežije aktualizaci Snapu.",
+    "Thunderbird": "Přidá CA do profilů Thunderbirdu, aby přes Smithproxy důvěřoval kontrolovaným TLS spojením pošty.",
+    "System": "Nainstaluje CA pro celý Ubuntu systém. Pomůže nástrojům jako curl, Git a aplikacím používajícím systémový trust store; vyžádá si administrátorské potvrzení.",
 }
 
 
@@ -36,6 +49,8 @@ def nss_databases() -> list[tuple[str, str, Path]]:
         ("firefox", "Firefox", Path.home() / ".mozilla/firefox"),
         ("firefox-snap", "Firefox Snap", Path.home() / "snap/firefox/common/.mozilla/firefox"),
         ("firefox-flatpak", "Firefox Flatpak", Path.home() / ".var/app/org.mozilla.firefox/.mozilla/firefox"),
+        ("librewolf", "LibreWolf", Path.home() / ".librewolf"),
+        ("librewolf-flatpak", "LibreWolf Flatpak", Path.home() / ".var/app/io.gitlab.librewolf-community/.librewolf"),
         ("thunderbird", "Thunderbird", Path.home() / ".thunderbird"),
         ("thunderbird-snap", "Thunderbird Snap", Path.home() / "snap/thunderbird/common/.thunderbird"),
     )
@@ -49,6 +64,9 @@ def nss_databases() -> list[tuple[str, str, Path]]:
                 databases.append((key, browser, database))
                 seen.add(database)
     chromium = Path.home() / ".pki/nssdb"
+    if not chromium.is_dir():
+        xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+        chromium = xdg_data / "pki/nssdb"
     if chromium.is_dir():
         databases.append(("chromium", "Chromium / NSS", chromium))
     # Snap gives every Brave revision a private HOME.  After a snap refresh an
@@ -108,9 +126,9 @@ def store_status(instance: Instance) -> list[dict]:
     for key, _label, database in nss_databases():
         grouped.setdefault(key, []).append(database)
     result = []
-    for key in ("firefox", "firefox-snap", "firefox-flatpak", "thunderbird",
-                "thunderbird-snap", "chromium",
-                "chromium-snap", "brave-snap"):
+    for key in ("firefox", "firefox-snap", "firefox-flatpak", "librewolf",
+                "librewolf-flatpak", "chromium",
+                "chromium-snap", "brave-snap", "thunderbird", "thunderbird-snap"):
         databases = grouped.get(key, [])
         installed = 0
         if expected:
@@ -121,8 +139,12 @@ def store_status(instance: Instance) -> list[dict]:
                                   and _has_explicit_ssl_trust(database, nickname(instance.name)))
                 except (ValueError, ssl.SSLError):
                     pass
-        result.append({"key": key, "label": STORE_LABELS[key], "available": bool(databases),
+        definition = STORE_DEFINITIONS[key]
+        result.append({"key": key, **definition,
+                       "description": FAMILY_DESCRIPTIONS[definition["family"]],
+                       "available": bool(databases),
                        "installed": bool(databases) and installed == len(databases),
+                       "present": installed > 0,
                        "detail": f"{installed}/{len(databases)} profilů" if databases else "nenalezen"})
     target = system_certificate_path(instance.name)
     system_installed = False
@@ -131,9 +153,11 @@ def store_status(instance: Instance) -> list[dict]:
             system_installed = _fingerprint_pem(target.read_bytes()) == expected
         except (ValueError, ssl.SSLError, PermissionError):
             pass
-    result.append({"key": "system", "label": STORE_LABELS["system"],
+    result.append({"key": "system", **STORE_DEFINITIONS["system"],
+                   "description": FAMILY_DESCRIPTIONS["System"],
                    "available": bool(shutil.which("update-ca-certificates")),
                    "installed": system_installed,
+                   "present": system_installed,
                    "detail": "pro celý systém"})
     return result
 
@@ -151,6 +175,17 @@ def install_store(instance: Instance, store: str) -> int:
     return len(databases)
 
 
+def remove_store(instance: Instance, store: str) -> int:
+    databases = [database for key, _label, database in nss_databases() if key == store]
+    if not databases:
+        raise RuntimeError(f"Store {STORE_LABELS.get(store, store)} nebyl nalezen.")
+    removed = 0
+    for database in databases:
+        result = _certutil(["-D", "-d", f"sql:{database}", "-n", nickname(instance.name)], check=False)
+        removed += result.returncode == 0
+    return removed
+
+
 def install_system(instance_name: str, source: Path) -> None:
     if os.geteuid() != 0:
         raise RuntimeError("Instalace do systémového store vyžaduje administrátorská práva.")
@@ -161,6 +196,13 @@ def install_system(instance_name: str, source: Path) -> None:
     shutil.copyfile(source, target)
     target.chmod(0o644)
     subprocess.run(["update-ca-certificates"], check=True)
+
+
+def remove_system(instance_name: str) -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("Odebrání ze systémového store vyžaduje administrátorská práva.")
+    system_certificate_path(instance_name).unlink(missing_ok=True)
+    subprocess.run(["update-ca-certificates", "--fresh"], check=True)
 
 
 def _certutil(arguments: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -216,7 +258,7 @@ def status(instance: Instance) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="saslik-ca")
     parser.add_argument("-i", "--instance", default="default")
-    parser.add_argument("action", choices=("install", "status", "remove", "system-install"))
+    parser.add_argument("action", choices=("install", "status", "remove", "system-install", "system-remove"))
     parser.add_argument("--certificate", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     instance = Instance.load(args.instance)
@@ -225,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.certificate is None:
                 raise RuntimeError("Chybí cesta k certifikátu.")
             install_system(args.instance, args.certificate)
+            return 0
+        if args.action == "system-remove":
+            remove_system(args.instance)
             return 0
         if args.action == "install":
             install(instance)

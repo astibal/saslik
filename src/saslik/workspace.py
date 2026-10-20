@@ -10,6 +10,7 @@ import json
 import platform
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 from .settings import setting_value
@@ -125,11 +126,73 @@ def discard_source_changes(lab: Path) -> list[str]:
     return changed
 
 
+def _git_directory(checkout: Path) -> Path | None:
+    marker = checkout / ".git"
+    if marker.is_dir():
+        return marker
+    try:
+        value = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value.startswith("gitdir:"):
+        return None
+    git_dir = Path(value.removeprefix("gitdir:").strip())
+    return git_dir if git_dir.is_absolute() else (checkout / git_dir).resolve()
+
+
+def _lock_is_open(lock: Path) -> bool:
+    """Check whether a live process still has this exact lock inode open."""
+    try:
+        identity = (lock.stat().st_dev, lock.stat().st_ino)
+    except OSError:
+        return False
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            descriptors = (process / "fd").iterdir()
+            for descriptor in descriptors:
+                try:
+                    status = descriptor.stat()
+                except OSError:
+                    continue
+                if (status.st_dev, status.st_ino) == identity:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _remove_abandoned_index_lock(command: list[str]) -> None:
+    """Recover a Git index lock left behind by a killed workspace update.
+
+    A fresh or open lock may belong to a real Git process and is never touched.
+    """
+    if len(command) < 3 or command[0] != "git" or command[1] != "-C":
+        return
+    git_dir = _git_directory(Path(command[2]))
+    if git_dir is None:
+        return
+    lock = git_dir / "index.lock"
+    try:
+        status = lock.stat()
+    except OSError:
+        return
+    if status.st_uid != os.geteuid() or time.time() - status.st_mtime < 2.0:
+        return
+    if _lock_is_open(lock):
+        return
+    try:
+        lock.unlink()
+    except FileNotFoundError:
+        return
+    print(f"Odstraňuji osiřelý Git lock po přerušené aktualizaci: {lock}")
+
+
 def _run(command: list[str], *, quiet: bool = False) -> None:
     environment = os.environ.copy()
     if command and command[0] == "git":
         environment.setdefault("GIT_TERMINAL_PROMPT", "0")
         environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+        _remove_abandoned_index_lock(command)
     subprocess.run(command, check=True, env=environment,
                    stdout=subprocess.DEVNULL if quiet else None,
                    stderr=subprocess.DEVNULL if quiet else None)

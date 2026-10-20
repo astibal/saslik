@@ -3,16 +3,45 @@ import shutil
 import unittest
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 from saslik.workspace import (
-    _run, _sync_checkout, component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
+    _remove_abandoned_index_lock, _run, _sync_checkout, component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
     save_binary_bundle, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_abandoned_git_index_lock_is_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            lock = checkout / ".git/index.lock"
+            lock.parent.mkdir()
+            lock.touch()
+            stale = time.time() - 10
+            os.utime(lock, (stale, stale))
+
+            with patch("saslik.workspace._lock_is_open", return_value=False):
+                _remove_abandoned_index_lock(["git", "-C", str(checkout), "status"])
+
+            self.assertFalse(lock.exists())
+
+    def test_live_git_index_lock_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            lock = checkout / ".git/index.lock"
+            lock.parent.mkdir()
+            lock.touch()
+            stale = time.time() - 10
+            os.utime(lock, (stale, stale))
+
+            with patch("saslik.workspace._lock_is_open", return_value=True):
+                _remove_abandoned_index_lock(["git", "-C", str(checkout), "status"])
+
+            self.assertTrue(lock.exists())
+
     def test_component_source_status_reports_missing_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             result = component_source_status(Path(directory), "smithproxy")
