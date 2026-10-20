@@ -8,6 +8,25 @@ from saslik.settings import update_settings
 
 
 class ComponentTests(unittest.TestCase):
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_frontend_uses_spider_versioned_server_when_available(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            manager = SystemdComponents(lab, "lab1")
+            legacy = next(c for c in manager.components() if c.name == "frontend")
+            self.assertEqual(legacy.command[1:3], ("-m", "http.server"))
+            server = lab / "src/smithproxy-spider/tools/serve-frontend.py"
+            server.parent.mkdir(parents=True)
+            server.touch()
+            frontend = next(c for c in manager.components() if c.name == "frontend")
+            self.assertEqual(frontend.command[1], str(server))
+            self.assertEqual(frontend.command[2:], (
+                "15173", "--bind", "0.0.0.0", "--directory", str(lab / "state/frontend")))
+
     def test_unit_names_are_instance_scoped(self):
         self.assertEqual("saslik-lab-1-smithproxy.service",
                          unit_name("lab.1", "smithproxy"))

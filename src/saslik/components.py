@@ -131,6 +131,9 @@ class SystemdComponents:
         config = self.state / "smithproxy.cfg"
         socat = shutil.which("socat") or "socat"
         python = sys.executable
+        frontend_server = self.lab / "src/smithproxy-spider/tools/serve-frontend.py"
+        frontend_command = ((python, str(frontend_server)) if frontend_server.is_file()
+                            else (python, "-m", "http.server"))
         result = [
             Component(
                 "smithproxy",
@@ -186,7 +189,7 @@ class SystemdComponents:
                 ),
                 Component(
                     "frontend",
-                    (python, "-m", "http.server", "15173", "--bind", "0.0.0.0",
+                    (*frontend_command, "15173", "--bind", "0.0.0.0",
                      "--directory", str(self.state / "frontend")),
                     self.state / "frontend.log",
                 ),
