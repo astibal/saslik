@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
-                           app_launch_command, open_frontend, skewer_discovery)
+                           app_launch_command, normalize_skewer_report,
+                           open_frontend, skewer_discovery)
 
 
 class DummySocket:
@@ -78,6 +79,29 @@ class SkewerDiscoveryTests(unittest.TestCase):
             value = skewer_discovery("lab1", Path(directory))
         self.assertFalse(value["available"])
         self.assertEqual("", value["generation"])
+
+    def test_report_is_bounded_and_normalized(self):
+        value = normalize_skewer_report({
+            "version": 1, "hostname": "razor", "skewer_version": "0.9.50",
+            "ca": {"fingerprint": "ab12", "applications": [{
+                "id": "app:firefox", "alias": "Firefox",
+                "recognized": True,
+                "icon": "data:image/png;base64,aGVsbG8="}], "stores": [{
+                "key": "/home/me/.pki/nssdb", "label": "Chromium",
+                "application_id": "app:chromium", "snap_lifecycle": "current",
+                "available": 1, "installed": False, "matches": 2}]}})
+        self.assertEqual("razor", value["hostname"])
+        self.assertTrue(value["ca"]["stores"][0]["available"])
+        self.assertEqual(2, value["ca"]["stores"][0]["matches"])
+        self.assertEqual("Firefox", value["ca"]["applications"][0]["alias"])
+        self.assertTrue(value["ca"]["applications"][0]["recognized"])
+        self.assertEqual("", value["ca"]["applications"][0]["icon"])
+        self.assertEqual("current", value["ca"]["stores"][0]["snap_lifecycle"])
+
+    def test_report_rejects_unsafe_hostname(self):
+        with self.assertRaises(ValueError):
+            normalize_skewer_report({"version": 1, "hostname": "<script>",
+                                     "ca": {"stores": []}})
 
 
 class FrontendTests(unittest.TestCase):

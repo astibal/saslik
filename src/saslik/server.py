@@ -7,6 +7,7 @@ import io
 import mimetypes
 import os
 import pty
+import re
 import secrets
 import select
 import shutil
@@ -64,6 +65,88 @@ def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")
         "gateway": NS_ADDR,
         "host_interface": HOST_IF,
         "generation": generation,
+    }
+
+
+def _safe_report_icon(value: object) -> str:
+    prefix = "data:image/png;base64,"
+    icon = str(value or "")
+    if not icon.startswith(prefix) or len(icon) > 32768:
+        return ""
+    try:
+        data = base64.b64decode(icon[len(prefix):], validate=True)
+    except (ValueError, TypeError):
+        return ""
+    if (len(data) < 24 or len(data) > 24576
+            or data[:8] != b"\x89PNG\r\n\x1a\n"
+            or data[12:16] != b"IHDR"):
+        return ""
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    if not (1 <= width <= 64 and 1 <= height <= 64):
+        return ""
+    return prefix + base64.b64encode(data).decode("ascii")
+
+
+def normalize_skewer_report(value: object) -> dict:
+    """Validate the intentionally small, read-only client status document."""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        raise ValueError("Nepodporovaná verze Skewer reportu.")
+    hostname = str(value.get("hostname", "")).strip()
+    if not hostname or len(hostname) > 253 or not re.fullmatch(r"[A-Za-z0-9_.-]+", hostname):
+        raise ValueError("Neplatný hostname ve Skewer reportu.")
+    ca = value.get("ca", {})
+    if not isinstance(ca, dict) or not isinstance(ca.get("stores", []), list):
+        raise ValueError("Neplatný CA stav ve Skewer reportu.")
+    applications = []
+    seen_applications = set()
+    for raw in ca.get("applications", [])[:128]:
+        if not isinstance(raw, dict):
+            continue
+        app_id = str(raw.get("id", ""))[:128]
+        alias = str(raw.get("alias", ""))[:256]
+        if (not app_id or app_id in seen_applications
+                or not re.fullmatch(r"[A-Za-z0-9_.:-]+", app_id)):
+            continue
+        seen_applications.add(app_id)
+        applications.append({"id": app_id, "alias": alias or app_id,
+                             "recognized": bool(raw.get("recognized")),
+                             "icon": _safe_report_icon(raw.get("icon"))})
+    stores = []
+    for raw in ca.get("stores", [])[:256]:
+        if not isinstance(raw, dict):
+            continue
+        application_id = str(raw.get("application_id", ""))[:128]
+        if application_id not in seen_applications:
+            application_id = ""
+        lifecycle = str(raw.get("snap_lifecycle", "unknown"))
+        if lifecycle not in {"current", "common", "retained", "unknown"}:
+            lifecycle = "unknown"
+        try:
+            matches = max(0, min(int(raw.get("matches", 0) or 0), 10000))
+        except (ValueError, TypeError):
+            matches = 0
+        stores.append({
+            "key": str(raw.get("key", ""))[:1024],
+            "label": str(raw.get("label", ""))[:256],
+            "path": str(raw.get("path", ""))[:1024],
+            "system": bool(raw.get("system")),
+            "available": bool(raw.get("available")),
+            "installed": bool(raw.get("installed")),
+            "detail": str(raw.get("detail", ""))[:512],
+            "matches": matches,
+            "application_id": application_id,
+            "snap_name": str(raw.get("snap_name", ""))[:128],
+            "snap_revision": str(raw.get("snap_revision", ""))[:64],
+            "snap_state": str(raw.get("snap_state", ""))[:128],
+            "snap_lifecycle": lifecycle,
+        })
+    return {
+        "version": 1,
+        "hostname": hostname,
+        "skewer_version": str(value.get("skewer_version", ""))[:64],
+        "ca": {"fingerprint": str(ca.get("fingerprint", ""))[:128],
+               "applications": applications, "stores": stores},
     }
 
 
@@ -206,6 +289,8 @@ class SaslikServer(ThreadingHTTPServer):
         self.cli_lock = threading.Lock()
         self.spider_bootstraps = SpiderBootstrapStore()
         self.skewer_last_seen = 0.0
+        self.skewer_reports: dict[str, dict] = {}
+        self.skewer_reports_lock = threading.Lock()
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -288,6 +373,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/skewer":
             self.server.skewer_last_seen = time.monotonic()
             return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
+        if path == "/api/skewer/reports":
+            with self.server.skewer_reports_lock:
+                reports = [dict(report, online=time.monotonic() - report["seen_monotonic"] < 30)
+                           for report in self.server.skewer_reports.values()]
+            for report in reports:
+                report.pop("seen_monotonic", None)
+            reports.sort(key=lambda report: report["hostname"].casefold())
+            return self._json({"reports": reports})
         if path == "/api/session":
             return self._json({"csrf": self.server.csrf, "devel": self.server.devel})
         if path == "/api/identity":
@@ -538,6 +631,21 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/spider/bootstrap/redeem":
             return self._spider_bootstrap_redeem()
+        if path == "/api/skewer/report":
+            try:
+                declared = int(self.headers.get("Content-Length", "0"))
+                if declared < 1 or declared > 256 * 1024:
+                    return self._json({"error": "Skewer report má neplatnou velikost."},
+                                      HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                report = normalize_skewer_report(json.loads(self.rfile.read(declared)))
+                report["received_at"] = time.time()
+                report["seen_monotonic"] = time.monotonic()
+                with self.server.skewer_reports_lock:
+                    self.server.skewer_reports[report["hostname"]] = report
+                self.server.skewer_last_seen = time.monotonic()
+                return self._json({"ok": True})
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
         if path.startswith("/api/dev/") and not self.server.devel:
@@ -1090,7 +1198,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'")
         self.end_headers()
         self.wfile.write(data)
 
