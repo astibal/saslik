@@ -863,12 +863,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError("Guardian workspace nezastavil.")
             return self._json({"ok": True, "workspace": workspace})
         if operation == "discard-source-changes":
-            services = SystemdComponents(instance.data_dir, instance.name,
-                                         self.server.runner.expose_address).status()
-            if self.server.runner.operation_running() or any(
-                    value.get("state") in {"running", "starting"}
-                    for value in services.values()):
-                raise RuntimeError("Lokální změny lze zahodit jen při zastaveném labu.")
+            if self.server.runner.operation_running():
+                raise RuntimeError("Počkej na dokončení právě probíhající operace.")
             if component and component not in COMPONENT_SOURCES:
                 raise ValueError(f"Neznámá komponenta: {component}")
             changed = source_changes(instance.data_dir)

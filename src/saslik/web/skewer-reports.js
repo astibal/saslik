@@ -79,8 +79,9 @@ async function refreshSkewerReports() {
             ? new Date(report.received_at * 1000).toLocaleString() : '—';
         const groupState = group => {
             const active = group.stores.filter(store => store.snap_lifecycle !== 'retained');
-            return active.length && active.every(store => store.installed) ? 'trusted'
-                : active.some(store => store.available) ? 'partial' : 'unavailable';
+            const trusted = active.filter(store => store.installed).length;
+            return active.length && trusted === active.length ? 'trusted'
+                : trusted > 0 ? 'partial' : 'unconfigured';
         };
         const orderedFamilies = [...families].sort(([, left], [, right]) => {
             const priority = group => groupState(group) === 'trusted' ? 0
@@ -103,8 +104,9 @@ async function refreshSkewerReports() {
                     : store.snap_lifecycle === 'current' ? `current ${store.snap_revision}` : 'unknown'
             ).filter((value, index, values) => values.indexOf(value) === index);
             const state = groupState(group);
-            const title = `${application.alias || fallback}: ${trusted}/${activeStores.length} aktivní důvěryhodné`;
-            return `<span class="ca-app-compact ${state}" title="${esc(title)}"><img src="${esc(icon)}" alt=""><i></i><span><b>${esc(application.alias || fallback)}</b>${versions.map(version => `<small>${esc(version)}</small>`).join('')}</span></span>`;
+            const ratio = `${trusted}/${activeStores.length}`;
+            const title = `${application.alias || fallback}: ${ratio} aktivní důvěryhodné`;
+            return `<span class="ca-app-compact ${state}" title="${esc(title)}"><img src="${esc(icon)}" alt=""><i></i><span><b>${esc(application.alias || fallback)}</b><small class="ca-trust-ratio">${esc(ratio)}</small>${versions.map(version => `<small>${esc(version)}</small>`).join('')}</span></span>`;
         }).join('');
         const rows = orderedFamilies.flatMap(([, group]) => group.stores.map(store => ({
             application: group.application, store
@@ -119,8 +121,15 @@ async function refreshSkewerReports() {
                 || (order[left.store.snap_lifecycle] ?? 2) - (order[right.store.snap_lifecycle] ?? 2);
         }).map(({application, store}) => `<tr class="snap-${esc(store.snap_lifecycle || 'none')}"><td><b>${esc(application.alias || skewerStoreFamily(store))}</b><small>${esc(store.label || '')}</small></td><td>${store.system ? 'System' : 'NSS'}</td><td>${esc(store.snap_name ? skewerStoreVariant(store) : '—')}</td><td class="${store.installed ? 'trusted' : ''}">${esc(store.installed ? 'důvěryhodné' : store.detail || 'CA nenalezena')}</td><td><code title="${esc(store.path || '')}">${esc(store.path || '—')}</code></td></tr>`).join('');
         const wasOpen = document.querySelector('.host-report-details')?.open;
+        const showUnconfigured = localStorage.getItem('saslik-show-unconfigured-apps') === '1';
         $('skewer-trust-content').innerHTML =
-            `<details class="host-report-details" ${wasOpen ? 'open' : ''}><summary class="host-report-meta"><span><i class="${report.online ? 'online' : 'offline'}"></i><b>${esc(report.hostname)} · ${report.online ? 'Skewer připojen' : 'Skewer offline'}</b></span><em>›</em></summary><div class="host-report-details-meta"><span>verze <b>${esc(report.skewer_version || '—')}</b></span><span>poslední report <b>${esc(updated)}</b></span></div><div class="host-report-table-wrap"><table class="host-report-table"><thead><tr><th>Store / profil</th><th>Typ</th><th>Snap revize</th><th>CA stav</th><th>Přesné umístění</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Skewer zatím nereportoval žádné CA stores.</td></tr>'}</tbody></table></div></details><div class="ca-app-strip">${compact}</div>`;
+            `<details class="host-report-details" ${wasOpen ? 'open' : ''}><summary class="host-report-meta"><span><i class="${report.online ? 'online' : 'offline'}"></i><b>${esc(report.hostname)}</b><small>${report.online ? 'online' : 'offline'}</small></span><span class="host-report-more">details <em>›</em></span></summary><div class="host-report-details-meta"><span>Skewer <b>${esc(report.skewer_version || '—')}</b></span><span>poslední report <b>${esc(updated)}</b></span></div><div class="host-report-table-wrap"><table class="host-report-table"><thead><tr><th>Store / profil</th><th>Typ</th><th>Snap revize</th><th>CA stav</th><th>Přesné umístění</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Skewer zatím nereportoval žádné CA stores.</td></tr>'}</tbody></table></div></details><div class="ca-app-toolbar"><label><input type="checkbox" data-show-unconfigured ${showUnconfigured ? 'checked' : ''}> Show unconfigured apps</label><small>0/N bez instalované CA</small></div><div class="ca-app-strip ${showUnconfigured ? '' : 'hide-unconfigured'}">${compact}</div>`;
+        const visibilityToggle = $('skewer-trust-content').querySelector('[data-show-unconfigured]');
+        visibilityToggle.onchange = () => {
+            localStorage.setItem('saslik-show-unconfigured-apps', visibilityToggle.checked ? '1' : '0');
+            $('skewer-trust-content').querySelector('.ca-app-strip')
+                ?.classList.toggle('hide-unconfigured', !visibilityToggle.checked);
+        };
     } catch (_) {
         // A disconnected reporter must not disturb the rest of the dashboard.
     }
