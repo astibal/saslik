@@ -82,6 +82,20 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual("lokální změny · je dostupná novější verze", result["detail"])
 
     @patch("saslik.workspace.subprocess.run")
+    def test_dirty_source_can_be_dropped_when_remote_fetch_fails(self, run):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout=" M local.cpp\n"),
+            subprocess.CalledProcessError(128, ["git", "fetch"]),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "src/smithproxy-spider/.git").mkdir(parents=True)
+            result = component_source_status(lab, "spider")
+        self.assertEqual("error", result["state"])
+        self.assertTrue(result["dirty"])
+        self.assertEqual("lokální změny · upstream nelze ověřit", result["detail"])
+
+    @patch("saslik.workspace.subprocess.run")
     def test_git_is_noninteractive_and_uses_ssh_agent(self, run):
         _run(["git", "fetch", "origin", "main"])
         environment = run.call_args.kwargs["env"]
@@ -114,6 +128,30 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual("original\n", tracked.read_text(encoding="utf-8"))
             self.assertFalse((checkout / "untracked.txt").exists())
             self.assertEqual("keep\n", preserved.read_text(encoding="utf-8"))
+
+    def test_discard_source_changes_can_target_one_component(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory) / "lab"
+            for name in ("smithproxy", "smithproxy-spider"):
+                checkout = lab / "src" / name
+                checkout.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+                tracked = checkout / "tracked.txt"
+                tracked.write_text("original\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
+                subprocess.run([
+                    "git", "-C", str(checkout), "-c", "user.name=Saslik test",
+                    "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+                ], check=True)
+                tracked.write_text("changed\n", encoding="utf-8")
+
+            self.assertCountEqual(["smithproxy", "smithproxy-spider"], source_changes(lab))
+            self.assertEqual(["smithproxy-spider"], discard_source_changes(lab, "spider"))
+            self.assertEqual(["smithproxy"], source_changes(lab))
+            self.assertEqual("changed\n", (lab / "src/smithproxy/tracked.txt").read_text())
+            self.assertEqual("original\n", (lab / "src/smithproxy-spider/tracked.txt").read_text())
+            with self.assertRaises(ValueError):
+                discard_source_changes(lab, "unknown")
 
     @patch("saslik.workspace._run")
     def test_sync_can_preserve_a_cloned_dirty_checkout_on_same_branch(self, run):

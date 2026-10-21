@@ -33,7 +33,7 @@ from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
-from .workspace import component_source_status, source_changes
+from .workspace import COMPONENT_SOURCES, component_source_status, source_changes
 from .version import saslik_version_status
 from .files import (delete_path, file_revision, list_directory, make_directory,
                     read_file, target_path, write_file)
@@ -727,7 +727,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/workspace/action":
                 return self._workspace_action(str(body.get("operation", "select")),
                                               str(body.get("workspace", "")),
-                                              str(body.get("new_name", "")))
+                                              str(body.get("new_name", "")),
+                                              str(body.get("component", "")))
             if path == "/api/workspace/settings":
                 workspace = str(body.get("workspace", ""))
                 lab, _ = self._workspace_target(workspace)
@@ -854,7 +855,8 @@ class Handler(BaseHTTPRequestHandler):
             if "path" in locals():
                 path.unlink(missing_ok=True)
 
-    def _workspace_action(self, operation: str, workspace: str, new_name: str) -> None:
+    def _workspace_action(self, operation: str, workspace: str, new_name: str,
+                          component: str = "") -> None:
         instance = Instance.load(workspace)
         if operation == "stop":
             if not self.server.guardian_request("stop", instance):
@@ -867,9 +869,16 @@ class Handler(BaseHTTPRequestHandler):
                     value.get("state") in {"running", "starting"}
                     for value in services.values()):
                 raise RuntimeError("Lokální změny lze zahodit jen při zastaveném labu.")
+            if component and component not in COMPONENT_SOURCES:
+                raise ValueError(f"Neznámá komponenta: {component}")
             changed = source_changes(instance.data_dir)
+            if component:
+                changed = [name for name in changed
+                           if name == COMPONENT_SOURCES[component][0]]
             command = ["sudo", "-n", sys.executable, "-m", "saslik.workspace",
                        "discard-changes", str(instance.data_dir)]
+            if component:
+                command.extend(["--component", component])
             result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                     text=True)
             if result.returncode:

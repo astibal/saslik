@@ -68,7 +68,8 @@
     filter: invert(.9) hue-rotate(165deg) saturate(.9) contrast(1.15) brightness(.65);
 }
 
-.component-row > button[data-component-update] {
+.component-actions { display:flex;gap:5px;justify-content:flex-end;align-items:center; }
+.component-actions button {
     height: 30px;
     padding: 0 9px;
     border: 1px solid #374047;
@@ -78,10 +79,12 @@
     font: 8px system-ui, sans-serif;
 }
 
-.component-row > button[data-component-update]:not(:disabled):hover {
+.component-actions button:not(:disabled):hover {
     border-color: var(--hot);
     color: var(--hot);
 }
+.component-actions .component-drop { width:26px;height:26px;padding:0;border-color:#30363b;background:transparent;color:var(--muted);font:15px/1 system-ui,sans-serif;opacity:.72; }
+.component-actions .component-drop:not(:disabled):hover { opacity:1;background:#2b1719;border-color:#8f3c4f;color:#ff7895; }
 
 .component-row > strong { display: grid; gap: 3px; }
 .component-row > strong > [data-source-status] { width:max-content;max-width:100%;padding:0;border:0;background:none;color:var(--muted);font:7px system-ui,sans-serif;text-align:left;cursor:pointer; }
@@ -96,7 +99,7 @@
 
 @media (max-width: 720px) {
     .component-row { grid-template-columns: 1fr 70px; }
-    .component-row > button[data-component-update] { justify-self: end; }
+    .component-actions { justify-self:end; }
 }
 
 /* Certificate stores are grouped by application; buttons remain per concrete

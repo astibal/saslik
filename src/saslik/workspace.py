@@ -52,12 +52,19 @@ def component_source_status(lab: Path, component: str) -> dict[str, object]:
     environment = os.environ.copy()
     environment.setdefault("GIT_TERMINAL_PROMPT", "0")
     environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
-    subprocess.run(
-        ["git", "-C", str(path), "fetch", "--quiet", "--no-write-fetch-head",
-         "origin", f"+{ref}:{tracking}"],
-        check=True, env=environment, timeout=20,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-    )
+    try:
+        subprocess.run(
+            ["git", "-C", str(path), "fetch", "--quiet", "--no-write-fetch-head",
+             "origin", f"+{ref}:{tracking}"],
+            check=True, env=environment, timeout=20,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Local cleanup must remain available even when a private remote is
+        # temporarily unreachable or the SSH agent has no suitable key.
+        return {"state": "error", "dirty": dirty,
+                "detail": ("lokální změny · upstream nelze ověřit" if dirty
+                           else "upstream nelze ověřit")}
     head = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
         text=True, stdout=subprocess.PIPE, timeout=5,
@@ -107,10 +114,15 @@ def source_changes(lab: Path) -> list[str]:
     return changed
 
 
-def discard_source_changes(lab: Path) -> list[str]:
-    """Discard tracked and untracked changes only in managed source trees."""
+def discard_source_changes(lab: Path, component: str | None = None) -> list[str]:
+    """Discard changes in all, or one, explicitly managed source tree."""
     sources = lab.resolve() / "src"
     changed = source_changes(lab)
+    if component is not None:
+        if component not in COMPONENT_SOURCES:
+            raise ValueError(f"Neznámá komponenta: {component}")
+        checkout = COMPONENT_SOURCES[component][0]
+        changed = [name for name in changed if name == checkout]
     for name in changed:
         path = sources / name
         # Submodules have their own worktrees. Clean them before forcing the
@@ -627,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "bundle-clear":
             (args.lab / "state/binary-bundle.json").unlink(missing_ok=True)
         elif args.action == "discard-changes":
-            changed = discard_source_changes(args.lab)
+            changed = discard_source_changes(args.lab, args.component)
             print("Zahozeny lokální změny: " + (", ".join(changed) if changed else "žádné"))
         elif not args.bundle:
             raise RuntimeError("Chybí cesta k binary bundle.")
