@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         remote = web_host != "localhost"
     expose_address = "0.0.0.0" if remote else "127.0.0.1"
     runner = LabRunner(instance.data_dir.parent, instance=instance.name, egress=instance.egress,
-                       expose_address=expose_address)
+                       expose_address=expose_address, devel=args.devel)
     runner.lab = instance.data_dir
     lease = acquire_privileges()
     try:

@@ -13,11 +13,18 @@ SETTINGS = {
         "description": "Geolokační enrichment v CZ PCAP Vieweru.",
         "secret": True,
     },
+    "license_issuer_key": {
+        "label": "Licenční veřejný klíč",
+        "description": "Ed25519 public key vydavatele licencí.",
+        "secret": True,
+        "multiline": True,
+    },
     "restart_smithproxy": {"label": "Smithproxy", "secret": False, "default": True},
     "restart_spider": {"label": "Spider", "secret": False, "default": True},
     "restart_sift": {"label": "Sift", "secret": False, "default": True},
     "restart_pcap_viewer": {"label": "PCAP Viewer", "secret": False, "default": True},
     "restart_pcap_storage": {"label": "Capture storage", "secret": False, "default": True},
+    "restart_lored": {"label": "Lored", "secret": False, "default": True},
     "debug_build": {"label": "Debug build", "secret": False, "default": False},
     "collect_coredumps": {"label": "Uložit core dump", "secret": False, "default": True},
     "collect_backtraces": {"label": "Vygenerovat backtrace", "secret": False, "default": True},
@@ -29,6 +36,8 @@ SETTINGS = {
     "ref_sift": {"label": "Sift branch / ref", "secret": False, "default": "main"},
     "source_pcap_viewer": {"label": "PCAP Viewer source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "main"},
+    "source_lored": {"label": "Lored source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_lored": {"label": "Lored branch / ref", "secret": False, "default": "main"},
 }
 
 
@@ -69,8 +78,11 @@ def update_settings(lab: Path, changes: dict[str, object]) -> None:
     for key, raw_value in changes.items():
         if SETTINGS[key]["secret"]:
             value = str(raw_value).strip() if raw_value is not None else ""
-            if "\n" in value or "\r" in value or "\0" in value:
+            if "\0" in value or (not SETTINGS[key].get("multiline") and
+                                   ("\n" in value or "\r" in value)):
                 raise ValueError(f"Neplatná hodnota nastavení: {key}")
+            if len(value) > 64 * 1024:
+                raise ValueError(f"Nastavení je příliš dlouhé: {key}")
             if value:
                 values[key] = value
             else:

@@ -21,6 +21,7 @@ REPOSITORIES = {
     "sift": "https://github.com/astibal/sift.git",
     "smithproxy": "https://github.com/astibal/smithproxy.git",
     "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
+    "lored": "git@github.com:astibal/lored.git",
 }
 
 COMPONENT_SOURCES = {
@@ -28,6 +29,7 @@ COMPONENT_SOURCES = {
     "spider": ("smithproxy-spider", "ref_spider"),
     "sift": ("sift", "ref_sift"),
     "pcap-viewer": ("capture-zone-viewer", "ref_pcap_viewer"),
+    "lored": ("lored", "ref_lored"),
 }
 
 
@@ -264,7 +266,7 @@ def _ensure_checkout(path: Path, repository: str) -> None:
         raise RuntimeError(f"Saslik odmítá použít cizí adresář {path}.")
 
 
-def sync(lab: Path, smithproxy_ref: str) -> None:
+def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
@@ -276,6 +278,10 @@ def sync(lab: Path, smithproxy_ref: str) -> None:
                    "sift" in preserved)
     _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref,
                    "smithproxy" in preserved)
+    if devel:
+        lored_repo = os.environ.get("SASLIK_LORED_REPOSITORY", REPOSITORIES["lored"])
+        _sync_checkout(sources / "lored", lored_repo, str(setting_value(lab, "ref_lored")),
+                       "lored" in preserved)
     sync_viewer(lab)
     _refresh_preserved_dirty_sources(lab, preserved)
     state = lab / "state"
@@ -294,7 +300,8 @@ def sync_viewer(lab: Path) -> None:
     _refresh_preserved_dirty_sources(lab, preserved)
 
 
-def sync_component(lab: Path, component: str, smithproxy_ref: str = "master") -> None:
+def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
+                   *, devel: bool = False) -> None:
     """Update exactly one managed source checkout."""
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
@@ -305,9 +312,13 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master") ->
         "sift": ("sift", "SASLIK_SIFT_REPOSITORY", str(setting_value(lab, "ref_sift"))),
         "pcap-viewer": ("capture-zone-viewer", "SASLIK_PCAP_VIEWER_REPOSITORY",
                         str(setting_value(lab, "ref_pcap_viewer"))),
+        "lored": ("lored", "SASLIK_LORED_REPOSITORY",
+                  str(setting_value(lab, "ref_lored"))),
     }
     if component not in values:
         raise ValueError(f"Neznámá komponenta: {component}")
+    if component == "lored" and not devel:
+        raise ValueError("Lored je dostupný pouze s --devel.")
     checkout, environment, ref = values[component]
     repository = os.environ.get(environment, REPOSITORIES[checkout])
     _sync_checkout(sources / checkout, repository, ref, checkout in preserved)
@@ -345,7 +356,7 @@ def install_viewer(lab: Path) -> None:
           str(viewer_source)])
 
 
-def build(lab: Path) -> None:
+def build(lab: Path, *, devel: bool = False) -> None:
     jobs = f"-j{os.cpu_count() or 1}"
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
     projects = [
@@ -353,6 +364,9 @@ def build(lab: Path) -> None:
         (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
         (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
     ]
+    if devel:
+        projects.append(
+            (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"))
     for source, destination, options, target in projects:
         _run(["cmake", "-S", str(source), "-B", str(destination),
               f"-DCMAKE_BUILD_TYPE={build_type}", *options])
@@ -363,7 +377,7 @@ def build(lab: Path) -> None:
     install_viewer(lab)
 
 
-def build_component(lab: Path, component: str) -> None:
+def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
     """Build or install one component without touching the other runtimes."""
     if component == "pcap-viewer":
         install_viewer(lab)
@@ -373,9 +387,12 @@ def build_component(lab: Path, component: str) -> None:
                        ["-DBUILD_TESTING=OFF"], "smithproxy"),
         "spider": (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
         "sift": (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
+        "lored": (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"),
     }
     if component not in projects:
         raise ValueError(f"Neznámá komponenta: {component}")
+    if component == "lored" and not devel:
+        raise ValueError("Lored je dostupný pouze s --devel.")
     source, destination, options, target = projects[component]
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
     _run(["cmake", "-S", str(source), "-B", str(destination),
@@ -438,7 +455,8 @@ def load_binary_bundle(lab: Path, source: Path) -> dict[str, object]:
             raise RuntimeError(f"Binary bundle není určený pro {platform.machine()}.")
         for required in (staging / "build/smithproxy/smithproxy",
                          staging / "build/spider/smithproxy-spider",
-                         staging / "build/sift/siftd", staging / "runtime/frontend"):
+                         staging / "build/sift/siftd",
+                         staging / "runtime/frontend"):
             if not required.exists():
                 raise RuntimeError(f"Binary bundle je neúplný, chybí {required.name}.")
         build = lab / "build"
@@ -612,13 +630,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ca-cert", type=Path)
     parser.add_argument("--ca-key", type=Path)
     parser.add_argument("--bundle", type=Path)
-    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "pcap-viewer"))
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer"))
+    parser.add_argument("--devel", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.action == "sync":
-            sync(args.lab, args.ref)
+            sync(args.lab, args.ref, devel=args.devel)
         elif args.action == "build":
-            build(args.lab)
+            build(args.lab, devel=args.devel)
         elif args.action == "viewer-sync":
             sync_viewer(args.lab)
         elif args.action == "viewer-install":
@@ -626,11 +645,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "component-sync":
             if not args.component:
                 raise RuntimeError("Chybí --component.")
-            sync_component(args.lab, args.component, args.ref)
+            sync_component(args.lab, args.component, args.ref, devel=args.devel)
         elif args.action == "component-build":
             if not args.component:
                 raise RuntimeError("Chybí --component.")
-            build_component(args.lab, args.component)
+            build_component(args.lab, args.component, devel=args.devel)
         elif args.action == "init":
             created = initialize_state(args.lab, args.template,
                                        ca_cert=args.ca_cert, ca_key=args.ca_key)

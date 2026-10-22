@@ -10,6 +10,19 @@ from saslik.settings import (component_environment, component_restart_on_failure
 
 
 class WorkspaceSettingsTests(unittest.TestCase):
+    def test_license_issuer_key_accepts_multiline_pem_without_exposing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            key = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----"
+            update_settings(lab, {"license_issuer_key": key})
+            public = public_settings(lab)["license_issuer_key"]
+            stored = json.loads(
+                (lab / "state/workspace-settings.json").read_text(encoding="utf-8")
+            )["license_issuer_key"]
+        self.assertEqual(key, stored)
+        self.assertTrue(public["configured"])
+        self.assertNotIn("value", public)
+
     def test_secret_is_persisted_privately_and_never_returned(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)
@@ -55,6 +68,8 @@ class WorkspaceSettingsTests(unittest.TestCase):
             update_settings(lab, {"restart_smithproxy": False})
             self.assertFalse(component_restart_on_failure(lab, "smithproxy"))
             self.assertFalse(public_settings(lab)["restart_smithproxy"]["value"])
+            self.assertTrue(component_restart_on_failure(lab, "lored"))
+            self.assertEqual("main", setting_value(lab, "ref_lored"))
 
     def test_debug_and_crash_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

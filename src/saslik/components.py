@@ -14,6 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .licensing import install_issuer, license_grant
 from .settings import component_environment, component_restart_on_failure, setting_value
 
 
@@ -70,7 +71,10 @@ class Component:
     log: Path
     environment: tuple[str, ...] = ()
     network_namespace: str | None = None
+    bind_paths: tuple[tuple[Path, Path], ...] = ()
     restart_on_failure: bool = False
+    required_feature: str | None = None
+    licensed_arguments: tuple[tuple[str, str], ...] = ()
 
 
 class SystemdComponents:
@@ -86,9 +90,11 @@ class SystemdComponents:
         "pcap-viewer.pid",
     )
 
-    def __init__(self, lab: Path, instance: str, expose_address: str = "127.0.0.1") -> None:
+    def __init__(self, lab: Path, instance: str, expose_address: str = "127.0.0.1",
+                 *, devel: bool = False) -> None:
         self.lab = lab
         self.instance = instance
+        self.devel = devel
         self.state = lab / "state"
         try:
             address = ipaddress.ip_address(expose_address)
@@ -120,6 +126,15 @@ class SystemdComponents:
         if not token.exists():
             token.write_text(secrets.token_urlsafe(32), encoding="ascii")
             token.chmod(0o600)
+        if self.devel:
+            lored_workspace = self.state / "lored"
+            lored_workspace.mkdir(parents=True, exist_ok=True)
+            pack = lored_workspace / "lore-pack.json"
+            if not pack.exists():
+                pack.write_text(
+                    '{"format":"lore-pack/2","sources":[],"claims":[],"indexes":{}}\n',
+                    encoding="utf-8",
+                )
 
     def components(self) -> list[Component]:
         values = _state_env(self.lab)
@@ -128,6 +143,7 @@ class SystemdComponents:
         sift = self.lab / "build/sift/siftd"
         pcap_viewer = self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
         pcap_storage = self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"
+        lored = self.lab / "build/lore/lored/lored"
         config = self.state / "smithproxy.cfg"
         socat = shutil.which("socat") or "socat"
         python = sys.executable
@@ -140,6 +156,7 @@ class SystemdComponents:
                 (str(smithproxy), "--config-file", str(config), "--diagnose", "--no-pidfile"),
                 self.state / "smithproxy.log",
                 network_namespace=NAMESPACE,
+                bind_paths=((self.state / "smithproxy-data", Path("/var/smithproxy/data")),),
                 restart_on_failure=component_restart_on_failure(self.lab, "smithproxy"),
             ),
             Component(
@@ -156,6 +173,14 @@ class SystemdComponents:
             self.state / "sift.log",
             restart_on_failure=component_restart_on_failure(self.lab, "sift"),
         ))
+        if self.devel and lored.is_file():
+            result.append(Component(
+                "lored", (str(lored), "--pack", str(self.state / "lored/lore-pack.json"),
+                          "--port", "8091"),
+                self.state / "lored.log",
+                restart_on_failure=component_restart_on_failure(self.lab, "lored"),
+                required_feature="component.lored",
+            ))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
             result.append(Component(
@@ -272,7 +297,22 @@ class SystemdComponents:
         }
         return expected.get(filename, "\0") in command
 
-    def _start_component(self, component: Component) -> None:
+    @staticmethod
+    def _licensed_command(component: Component) -> tuple[str, ...]:
+        runtime_command = list(component.command)
+        if component.required_feature:
+            granted = license_grant(component.required_feature, component.name)
+            # The license only supplies values. Saslik owns the key-to-option
+            # allow-list and never appends arbitrary license text to argv.
+            for key, option in component.licensed_arguments:
+                if key in granted:
+                    runtime_command.extend((option, granted[key]))
+        return tuple(runtime_command)
+
+    def _start_component(self, component: Component,
+                         runtime_command: tuple[str, ...] | None = None) -> None:
+        if runtime_command is None:
+            runtime_command = self._licensed_command(component)
         unit = unit_name(self.instance, component.name)
         _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
         command = [
@@ -286,7 +326,7 @@ class SystemdComponents:
         ]
         if component.restart_on_failure:
             command.append("--property=RestartSec=500ms")
-        crash_components = {"smithproxy", "spider", "sift", "pcap-viewer", "pcap-storage"}
+        crash_components = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "pcap-storage"}
         if component.name in crash_components:
             collect_core = setting_value(self.lab, "collect_coredumps") is True
             command.append(f"--property=LimitCORE={'infinity' if collect_core else '0'}")
@@ -295,19 +335,38 @@ class SystemdComponents:
             command.append(f"--property=ExecStopPost={hook}")
         if component.network_namespace:
             command.append(f"--property=NetworkNamespacePath=/run/netns/{component.network_namespace}")
+        for source, destination in component.bind_paths:
+            source.mkdir(parents=True, exist_ok=True)
+            command.append(f"--property=BindPaths={source}:{destination}")
         for value in component.environment:
             command.append(f"--setenv={value}")
-        command.extend(component.command)
+        command.extend(runtime_command)
         _run(command)
+
+    def _preflight_licenses(self, components: list[Component]) -> dict[str, tuple[str, ...]]:
+        licensed = [component for component in components if component.required_feature]
+        if licensed:
+            public_key = setting_value(self.lab, "license_issuer_key")
+            if not isinstance(public_key, str) or not public_key.strip():
+                raise RuntimeError(
+                    "Chybí veřejný klíč vydavatele licencí v nastavení workspace."
+                )
+            install_issuer("smithproxy", public_key)
+        return {
+            component.name: SystemdComponents._licensed_command(component)
+            for component in components
+        }
 
     def up(self) -> None:
         self._check_assets()
         self.state.mkdir(parents=True, exist_ok=True)
+        components = self.components()
+        runtime_commands = self._preflight_licenses(components)
         self.down()
         self._stop_legacy_processes()
         try:
-            for component in self.components():
-                self._start_component(component)
+            for component in components:
+                self._start_component(component, runtime_commands[component.name])
                 if component.name == "pcap-storage":
                     self._wait_storage_ready()
             self._wait_ready()
@@ -332,6 +391,7 @@ class SystemdComponents:
             "smithproxy": ("smithproxy",),
             "spider": ("spider", "frontend"),
             "sift": ("sift",),
+            "lored": ("lored",),
             "pcap-viewer": ("pcap-storage", "pcap-viewer"),
         }
         try:
@@ -355,9 +415,10 @@ class SystemdComponents:
         if len(components) != len(selected):
             missing = sorted(selected.difference(item.name for item in components))
             raise RuntimeError("Chybí runtime komponenty: " + ", ".join(missing))
+        runtime_commands = self._preflight_licenses(components)
         self.stop_component(component)
         for item in components:
-            self._start_component(item)
+            self._start_component(item, runtime_commands[item.name])
             if item.name == "pcap-storage":
                 self._wait_storage_ready()
 
@@ -367,11 +428,15 @@ class SystemdComponents:
         except (OSError, KeyError):
             names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
                      "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+            if self.devel:
+                names += ("lored",)
             return [Component(name, (), self.state / f"{name}.log") for name in names]
 
     def status(self) -> dict[str, dict[str, str | int | None]]:
         names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
                  "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+        if self.devel:
+            names += ("lored",)
         units = {unit_name(self.instance, name): name for name in names}
         output = _capture([
             "systemctl", "show", *units,
@@ -404,6 +469,8 @@ class SystemdComponents:
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
         checks.append(("http://127.0.0.1:18080/api/health", {}, False))
         checks.append(("http://127.0.0.1:18081/api/health", {}, False))
+        if self.devel and (self.lab / "build/lore/lored/lored").is_file():
+            checks.append(("http://127.0.0.1:8091/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             checks.append(("http://127.0.0.1:15174/readyz", {}, False))
         pending = list(checks)
@@ -481,9 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("lab", type=Path)
     parser.add_argument("--instance", default="default")
     parser.add_argument("--expose-address", default="127.0.0.1")
-    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "pcap-viewer"))
+    parser.add_argument("--devel", action="store_true")
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer"))
     args = parser.parse_args(argv)
-    manager = SystemdComponents(args.lab, args.instance, args.expose_address)
+    manager = SystemdComponents(args.lab, args.instance, args.expose_address, devel=args.devel)
     try:
         if args.action == "build":
             manager.build_auxiliaries()

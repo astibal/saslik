@@ -71,6 +71,10 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--no-pidfile", smithproxy.command)
         self.assertFalse(any(value.startswith("SMITHPROXY_PID_FILE=")
                              for value in smithproxy.environment))
+        self.assertEqual(
+            ((state / "smithproxy-data", Path("/var/smithproxy/data")),),
+            smithproxy.bind_paths,
+        )
 
     def test_remote_mode_exposes_forwarders_on_all_ipv4_addresses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -145,19 +149,89 @@ class ComponentTests(unittest.TestCase):
                           if component.name == "pcap-viewer")
         self.assertEqual(("IPINFO_TOKEN=workspace-secret",), viewer.environment)
 
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_lored_uses_workspace_pack_and_selective_component_group(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            executable = lab / "build/lore/lored/lored"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            for relative in ("build/spider/smithproxy-spider", "build/sift/siftd",
+                             "state/certs/default/ca-cert.pem"):
+                dependency = lab / relative
+                dependency.parent.mkdir(parents=True, exist_ok=True)
+                dependency.touch()
+            (lab / "src/smithproxy-spider/frontend").mkdir(parents=True)
+            manager = SystemdComponents(lab, "lab1", devel=True)
+            manager.build_auxiliaries()
+            component = next(item for item in manager.components()
+                             if item.name == "lored")
+            pack = lab / "state/lored/lore-pack.json"
+            pack_text = pack.read_text(encoding="utf-8")
+        self.assertEqual(("lored",), manager.component_group("lored"))
+        self.assertEqual(str(executable), component.command[0])
+        self.assertIn(str(pack), component.command)
+        self.assertIn('"format":"lore-pack/2"', pack_text)
+        self.assertTrue(component.restart_on_failure)
+        self.assertEqual("component.lored", component.required_feature)
+
+    @patch("saslik.components._run")
+    @patch("saslik.components.license_grant", return_value={"workers": "4", "ignored": "x"})
+    def test_licensed_arguments_use_saslik_allow_list(self, grant, run):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SystemdComponents(Path(directory), "lab1")
+            manager._start_component(Component(
+                "demo", ("/bin/demo",), Path(directory) / "demo.log",
+                required_feature="component.demo",
+                licensed_arguments=(("workers", "--workers"),),
+            ))
+        command = run.call_args_list[-1].args[0]
+        grant.assert_called_once_with("component.demo", "demo")
+        self.assertEqual(["/bin/demo", "--workers", "4"], command[-3:])
+        self.assertNotIn("ignored", command)
+
+    @patch("saslik.components._run")
+    @patch("saslik.components.install_issuer")
+    @patch("saslik.components.license_grant", side_effect=RuntimeError("bez licence"))
+    def test_restart_checks_license_before_stopping_running_component(
+            self, _grant, _install_issuer, run):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            update_settings(lab, {"license_issuer_key": "public-key"})
+            manager = SystemdComponents(lab, "lab1")
+            licensed = Component(
+                "demo", ("/bin/demo",), Path(directory) / "demo.log",
+                required_feature="component.demo",
+            )
+            with patch.object(manager, "component_group", return_value=("demo",)), \
+                    patch.object(manager, "components", return_value=[licensed]), \
+                    self.assertRaisesRegex(RuntimeError, "bez licence"):
+                manager.restart_component("demo")
+        run.assert_not_called()
+
     @patch("saslik.components._run")
     def test_component_is_started_as_transient_service_in_lab_slice(self, run):
         with tempfile.TemporaryDirectory() as directory:
             manager = SystemdComponents(Path(directory), "lab1")
+            capture_path = Path(directory) / "state/smithproxy-data"
             manager._start_component(Component(
                 "smithproxy", ("/bin/true",), Path(directory) / "smithproxy.log",
                 network_namespace="sxp-test",
+                bind_paths=((capture_path, Path("/var/smithproxy/data")),),
             ))
+            capture_path_created = capture_path.is_dir()
         command = run.call_args_list[-1].args[0]
         self.assertIn("--unit=saslik-lab1-smithproxy.service", command)
         self.assertIn("--slice=saslik-lab1.slice", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=NetworkNamespacePath=/run/netns/sxp-test", command)
+        self.assertIn(
+            f"--property=BindPaths={capture_path}:/var/smithproxy/data", command)
+        self.assertTrue(capture_path_created)
 
     @patch("saslik.components._run")
     def test_forwarder_restarts_after_transient_bind_failure(self, run):

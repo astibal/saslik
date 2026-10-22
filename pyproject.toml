@@ -7,7 +7,7 @@ name = "saslik"
 version = "0.2.0"
 description = "A tiny graphical launcher for a Smithproxy, Spider and Sift lab"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "Smithproxy project" }]
 dependencies = []

@@ -117,7 +117,7 @@ def end_to_end_status(lab: Path) -> dict[str, object]:
     return {"available": True, "stale": stale, **value}
 
 
-def collect(lab: Path) -> dict[str, object]:
+def collect(lab: Path, *, include_lored: bool = False) -> dict[str, object]:
     values = _state_env(lab)
     api_key = values.get("SMITHPROXY_API_KEY", "")
     checks = {
@@ -129,6 +129,8 @@ def collect(lab: Path) -> dict[str, object]:
         "cli": lambda: _tcp_check("127.0.0.1", 55000),
         "spider": lambda: _http_check("http://127.0.0.1:18080/api/health"),
     }
+    if include_lored and (lab / "build/lore/lored/lored").is_file():
+        checks["lored"] = lambda: _http_check("http://127.0.0.1:8091/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
         checks["pcap_viewer"] = lambda: _http_check("http://127.0.0.1:15174/readyz")
         try:

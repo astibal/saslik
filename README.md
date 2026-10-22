@@ -17,6 +17,34 @@ up completed captures and listens only on loopback; the browser-facing viewer
 uses its private `0600` token through the shared-filesystem API. Startup and the
 Status tab use each service's `/readyz` contract rather than a shallow HTTP ping.
 
+## Licensed components
+
+Community components remain independent of licensing. A component that is
+explicitly declared proprietary is checked immediately before Saslik replaces
+or starts its transient systemd service. Saslik talks directly to the local
+[`saslik-licensing`](https://github.com/astibal/saslik-licensing) facade at
+`/run/saslik/licensing.sock`; set `SASLIK_LICENSING_SOCKET` only for development
+or tests.
+
+```text
+signed license -> saslik-licensingd -> Unix socket -> Saslik preflight
+                                                    |-- feature grant
+                                                    `-- allow-listed arguments
+```
+
+The check is fail-closed only for the proprietary component. A failed check
+happens before an existing service is stopped. License-supplied text is never
+used as a command line: each component adapter must explicitly map an allowed
+key to an option, while unknown keys are ignored. `lored` is the first declared
+component and requires `component.lored`; Smithproxy, Spider, Sift and the PCAP
+Viewer are not gated by this integration.
+
+The issuer's Ed25519 public key is entered in the selected workspace settings,
+similarly to the IPinfo integration. Before a licensed component starts,
+Saslik sends the key to the daemon using `INSTALL-ISSUER`; the daemon parses the
+key, requires Ed25519 and atomically updates its issuer store. The corresponding
+private signing key must remain offline and is never accepted by this UI.
+
 ```bash
 python3 -m pip install .
 saslik
@@ -47,7 +75,7 @@ namespace without relying on PREROUTING/DNAT hairpin behaviour.
 
 ## Requirements
 
-Linux with systemd, Python 3.11+ including `venv`, `sudo`, Git, CMake, a C++
+Linux with systemd, Python 3.13+ including `venv`, `sudo`, Git, CMake, a C++
 compiler, Wireshark CLI tools (`sharkd`, `tshark`, `editcap`) and the dependencies
 required by Smithproxy, Spider and Sift. Saslik uses network namespaces,
 nftables and transient systemd services and therefore needs root. Saslik itself stays

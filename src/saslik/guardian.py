@@ -17,11 +17,11 @@ from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
 
 
-UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "pcap-viewer"}
+UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer"}
 
 
-def cleanup(lab: Path, instance: str, expose_address: str) -> None:
-    SystemdComponents(lab, instance, expose_address).down()
+def cleanup(lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
+    SystemdComponents(lab, instance, expose_address, devel=devel).down()
     routing_down()
     pasta_down(lab, instance)
     network_down(lab)
@@ -37,7 +37,7 @@ def parent_alive(pid: int) -> bool:
 
 
 def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
-          lab: Path, instance: str, expose_address: str) -> None:
+          lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -63,7 +63,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     target = (lab, str(payload["instance"]), str(payload["expose_address"]))
                     last_target = target
                     if payload.get("action") == "stop":
-                        cleanup(*target)
+                        cleanup(*target, devel=devel)
                     elif payload.get("action") == "diagnose-smithproxy":
                         diagnose_smithproxy(lab, str(payload["instance"]),
                                             int(payload.get("signal", 11)))
@@ -76,7 +76,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         component = str(payload.get("component", ""))
                         if component not in UPDATABLE_COMPONENTS:
                             raise RuntimeError("Komponenta není povolená.")
-                        manager = SystemdComponents(*target)
+                        manager = SystemdComponents(*target, devel=devel)
                         if payload["action"] == "component-stop":
                             manager.stop_component(component)
                         else:
@@ -89,7 +89,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
     finally:
         if last_target is not None:
             try:
-                cleanup(*last_target)
+                cleanup(*last_target, devel=devel)
             except Exception:
                 pass
         listener.close()
@@ -105,9 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lab", type=Path, required=True)
     parser.add_argument("--instance", required=True)
     parser.add_argument("--expose-address", required=True)
+    parser.add_argument("--devel", action="store_true")
     args = parser.parse_args(argv)
     serve(args.socket, args.owner_uid, args.parent_pid, args.data_root,
-          args.lab, args.instance, args.expose_address)
+          args.lab, args.instance, args.expose_address, devel=args.devel)
     return 0
 
 

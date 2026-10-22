@@ -42,6 +42,7 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 from .network import HOST_IF, NS_ADDR
+from .pairing import PairingStore, PskServer
 
 
 APP_BROWSERS = (
@@ -66,6 +67,20 @@ def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")
         "host_interface": HOST_IF,
         "generation": generation,
     }
+
+
+def skewer_ca(lab: Path, instance: str) -> dict:
+    """Publish only the active workspace's public CA, never its private key."""
+    root = identity_root(lab, active_name(lab, instance), instance)
+    path = root / ("certs/default/ca-cert.pem" if root.name == "state" else "certs-default/ca-cert.pem")
+    try:
+        with path.open("rb") as source:
+            pem = source.read(32769)
+        if len(pem) > 32768:
+            return {"ca_error": "CA certificate is too large"}
+        return {"ca_pem": pem.decode("ascii")}
+    except (OSError, UnicodeError):
+        return {"ca_error": "Workspace CA is not available yet"}
 
 
 def _safe_report_icon(value: object) -> str:
@@ -291,6 +306,7 @@ class SaslikServer(ThreadingHTTPServer):
         self.skewer_last_seen = 0.0
         self.skewer_reports: dict[str, dict] = {}
         self.skewer_reports_lock = threading.Lock()
+        self.psk_server = None
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -310,6 +326,8 @@ class SaslikServer(ThreadingHTTPServer):
                    "--parent-pid", str(os.getpid()), "--data-root", str(data_root()),
                    "--lab", str(self.runner.lab), "--instance", self.runner.instance,
                    "--expose-address", self.runner.expose_address]
+        if self.devel:
+            command.append("--devel")
         subprocess.run(command, check=True)
         deadline = time.monotonic() + 3
         while not self.guardian_socket.exists() and time.monotonic() < deadline:
@@ -345,6 +363,9 @@ class SaslikServer(ThreadingHTTPServer):
         return self.guardian_request("arm")
 
     def server_close(self) -> None:
+        if self.psk_server is not None:
+            self.psk_server.shutdown()
+            self.psk_server.server_close()
         with self.cli_lock:
             sessions = list(self.cli_sessions.values())
             self.cli_sessions.clear()
@@ -368,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/status":
             snapshot = self.server.runner.snapshot()
-            snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 6.0
+            snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
             return self._json(snapshot)
         if path == "/api/skewer":
             self.server.skewer_last_seen = time.monotonic()
@@ -648,6 +669,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
+        if path == "/api/skewer/pairing":
+            # The legacy HTTP GUI is not an authenticated remote administration channel.
+            # Never hand out enrollment secrets over that channel to remote clients.
+            host = urlparse("//" + self.headers.get("Host", "")).hostname
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback or host not in {"localhost", "127.0.0.1", "::1"}:
+                return self._json({"error": "Párovací údaje spravuj lokálně nebo přes SSH port-forward."}, HTTPStatus.FORBIDDEN)
+            if self.server.psk_server is None:
+                return self._json({"error": "PSK endpoint není dostupný."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 4096:
+                    raise ValueError()
+                value = json.loads(self.rfile.read(size))
+                if not isinstance(value, dict):
+                    raise ValueError()
+                store = self.server.psk_server.store
+                action = value.get("action", "link")
+                if action == "rotate":
+                    store.rotate()
+                elif action == "revoke":
+                    store.revoke(str(value.get("identity", "")))
+                elif action not in {"link", "list"}:
+                    raise ValueError()
+                if action == "list":
+                    with store.lock:
+                        return self._json({"clients": [{"identity": key, "instance": item["instance"], "state": item["state"], "permissions": item["permissions"]} for key, item in store.clients.items()]})
+                target = str(value.get("host") or host)
+                if not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", target):
+                    raise ValueError()
+                return self._json({"link": store.link(target, self.server.psk_server.server_address[1])})
+            except (ValueError, TypeError, KeyError):
+                return self._json({"error": "Neplatný požadavek párování."}, HTTPStatus.BAD_REQUEST)
         if path.startswith("/api/dev/") and not self.server.devel:
             return self._json({"error": "Dev režim není povolený. Spusť Saslik s --devel."},
                               HTTPStatus.FORBIDDEN)
@@ -811,7 +864,8 @@ class Handler(BaseHTTPRequestHandler):
         items = []
         for instance in Instance.discover():
             services = SystemdComponents(instance.data_dir, instance.name,
-                                         self.server.runner.expose_address).status()
+                                         self.server.runner.expose_address,
+                                         devel=self.server.devel).status()
             running = any(value.get("state") in {"running", "starting"}
                           for value in services.values())
             items.append({
@@ -884,13 +938,15 @@ class Handler(BaseHTTPRequestHandler):
         any_running = self.server.runner.operation_running()
         for candidate in Instance.discover():
             statuses = SystemdComponents(candidate.data_dir, candidate.name,
-                                         self.server.runner.expose_address).status()
+                                         self.server.runner.expose_address,
+                                         devel=self.server.devel).status()
             any_running = any_running or any(
                 value.get("state") in {"running", "starting"} for value in statuses.values())
         if any_running:
             raise RuntimeError("Workspace nelze změnit, dokud běží kterýkoliv lab.")
         services = SystemdComponents(instance.data_dir, instance.name,
-                                     self.server.runner.expose_address).status()
+                                     self.server.runner.expose_address,
+                                     devel=self.server.devel).status()
         if any(value.get("state") in {"running", "starting"} for value in services.values()):
             raise RuntimeError("Běžící workspace nelze přepnout ani přejmenovat.")
         if operation == "select":
@@ -1240,7 +1296,32 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         print("VAROVÁNÍ: Saslik UI a laboratorní porty budou dostupné ze sítě.")
         print("Používej pouze důvěryhodnou laboratorní síť nebo host firewall.")
     active_runner = runner or LabRunner()
+    active_runner.devel = devel
     server = SaslikServer((host, port), active_runner, devel=devel)
+    def paired_status():
+        server.skewer_last_seen = time.monotonic()
+        snapshot = active_runner.snapshot()
+        detail = {key: snapshot.get(key) for key in ("identity", "instance", "runtime_state", "services", "endpoints")}
+        detail["end_to_end"] = snapshot.get("health", {}).get("end_to_end", {})
+        return {**skewer_discovery(active_runner.instance),
+                **skewer_ca(active_runner.lab, active_runner.instance),
+                "lab_status": detail, "ui_port": server.server_port}
+    def paired_report(client, payload):
+        report = normalize_skewer_report(payload)
+        report.update(received_at=time.time(), seen_monotonic=time.monotonic(), client_id=client)
+        with server.skewer_reports_lock:
+            # The authenticated identity owns this record; hostname is display
+            # data only. Retire the old unauthenticated row during migration.
+            previous = server.skewer_reports.get(report["hostname"])
+            if previous and not previous.get("client_id"):
+                del server.skewer_reports[report["hostname"]]
+            server.skewer_reports[client] = report
+        server.skewer_last_seen = time.monotonic()
+        return {"ok": True}
+    server.psk_server = PskServer((host, server.server_port + 1),
+        PairingStore(data_root() / "skewer-clients.json"),
+        paired_status, paired_report)
+    threading.Thread(target=server.psk_server.serve_forever, daemon=True).start()
     server.start_guardian()
     active_runner.component_action = lambda action, component: server.guardian_request(
         f"component-{action.removesuffix('-component')}", component=component)

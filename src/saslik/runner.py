@@ -17,10 +17,13 @@ from .health import collect as collect_health
 from .pasta import cleanup_needed as pasta_cleanup_needed
 
 
-def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False) -> tuple[str, list[str]]:
+def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False,
+                  lored_enabled: bool = False) -> tuple[str, list[str]]:
     required = ["smithproxy", "spider", "sift"]
     if viewer_enabled:
         required.extend(("pcap-storage", "pcap-viewer"))
+    if lored_enabled:
+        required.append("lored")
     states = {name: str(services.get(name, {}).get("state", "stopped")) for name in required}
     if all(state == "stopped" for state in states.values()):
         return "stopped", []
@@ -83,13 +86,14 @@ class LabRunner:
     """Builds a lab and delegates component lifecycle to systemd."""
 
     def __init__(self, root: Path | None = None, *, instance: str = "default", egress: str = "nat",
-                 expose_address: str = "127.0.0.1") -> None:
+                 expose_address: str = "127.0.0.1", devel: bool = False) -> None:
         self.root = root or data_root()
         self.root.mkdir(parents=True, exist_ok=True)
         self.lab = self.root / "lab"
         self.instance = instance
         self.egress = egress
         self.expose_address = expose_address
+        self.devel = devel
         self._lock = threading.RLock()
         self._job = Job()
         self._next_id = 1
@@ -147,6 +151,7 @@ class LabRunner:
         result["runtime_state"], result["runtime_issues"] = runtime_state(
             result["services"],
             viewer_enabled=(self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file(),
+            lored_enabled=self.devel and (self.lab / "build/lore/lored/lored").is_file(),
         )
         result["health"] = self._health_status()
         return result
@@ -165,13 +170,14 @@ class LabRunner:
             sampled, value = self._health_cache
             now = time.monotonic()
             if now - sampled >= 1.0:
-                value = collect_health(self.lab)
+                value = collect_health(self.lab, include_lored=self.devel)
                 self._health_cache = (now, value)
             return value
 
     def _service_status(self) -> dict[str, dict]:
-        result = SystemdComponents(self.lab, self.instance, self.expose_address).status()
-        for name in ("smithproxy", "spider", "sift"):
+        result = SystemdComponents(self.lab, self.instance, self.expose_address,
+                                   devel=self.devel).status()
+        for name in ("smithproxy", "spider", "sift") + (("lored",) if self.devel else ()):
             result.setdefault(name, {"state": "inactive", "pid": None})
         return result
 
@@ -180,7 +186,7 @@ class LabRunner:
         if action not in {"start", "stop", "reset", "fetch", "status", "update-component"}:
             raise ValueError("Neznámá akce.")
         if action == "update-component" and component not in {
-                "smithproxy", "spider", "sift", "pcap-viewer"}:
+                "smithproxy", "spider", "sift", "lored", "pcap-viewer"}:
             raise ValueError("Neznámá komponenta.")
         branch = validate_ref(branch)
         if template not in {"spider-sift", "spider", "proxy"}:
@@ -265,6 +271,9 @@ class LabRunner:
         dns_server = "169.254.1.1" if self.egress == "pasta" else "1.1.1.1"
         component_args = [str(self.lab), "--instance", self.instance,
                           "--expose-address", self.expose_address]
+        if self.devel:
+            component_args.append("--devel")
+        workspace_devel = ["--devel"] if self.devel else []
         clean_pasta = self.egress == "pasta" or pasta_cleanup_needed(
             self.lab, self.instance, inspect_unit=False)
 
@@ -278,15 +287,20 @@ class LabRunner:
             commands.append(network + ["down", str(self.lab)])
             if not (self.lab / "state/binary-bundle.json").is_file():
                 commands.extend([
-                    workspace + ["sync", str(self.lab), "--ref", branch],
-                    workspace + ["build", str(self.lab), "--ref", branch],
+                    workspace + ["sync", str(self.lab), "--ref", branch, *workspace_devel],
+                    workspace + ["build", str(self.lab), "--ref", branch, *workspace_devel],
                 ])
             else:
-                # Binary bundles intentionally cover the compiled dataplane,
-                # not the independently released Python viewer.
+                # Binary bundles cover the compiled dataplane. Independently
+                # managed components are still fetched and built normally.
                 commands.extend([
                     workspace + ["viewer-sync", str(self.lab)],
                     workspace + ["viewer-install", str(self.lab)],
+                    *([workspace + ["component-sync", str(self.lab), "--ref", branch,
+                                   "--component", "lored", "--devel"],
+                       workspace + ["component-build", str(self.lab),
+                                   "--component", "lored", "--devel"]]
+                      if self.devel else []),
                 ])
             commands.extend([
                 workspace + ["init", str(self.lab), "--ref", branch, "--template", template,
@@ -326,15 +340,16 @@ class LabRunner:
             ])
             return commands
         if action == "fetch":
-            return [workspace + ["sync", str(self.lab), "--ref", branch]]
+            return [workspace + ["sync", str(self.lab), "--ref", branch, *workspace_devel]]
         if action == "update-component":
             commands = [workspace + ["component-sync", str(self.lab), "--ref", branch,
-                                     "--component", component]]
+                                     "--component", component, *workspace_devel]]
             if component == "pcap-viewer":
                 commands.append(components + ["stop-component", *component_args,
                                                "--component", component])
             commands.extend([
-                workspace + ["component-build", str(self.lab), "--component", component],
+                workspace + ["component-build", str(self.lab), "--component", component,
+                             *workspace_devel],
                 components + ["restart-component", *component_args, "--component", component],
             ])
             return commands

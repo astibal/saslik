@@ -17,6 +17,7 @@ PROJECTS = {
     "socle": "src/smithproxy/socle",
     "spider": "src/smithproxy-spider",
     "sift": "src/sift",
+    "lored": "src/lored",
     "pcap-viewer": "src/capture-zone-viewer",
 }
 MAX_PATCH_BYTES = 1024 * 1024

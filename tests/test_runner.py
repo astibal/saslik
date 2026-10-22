@@ -17,6 +17,14 @@ class RunnerTests(unittest.TestCase):
         healthy["smithproxy"] = {"state": "starting"}
         self.assertEqual(("recovering", ["smithproxy"]), runtime_state(healthy))
 
+    def test_runtime_state_requires_lored_when_built(self):
+        healthy = {name: {"state": "running"} for name in
+                   ("smithproxy", "spider", "sift", "lored")}
+        self.assertEqual(("running", []), runtime_state(healthy, lored_enabled=True))
+        healthy["lored"] = {"state": "failed"}
+        self.assertEqual(("degraded", ["lored"]),
+                         runtime_state(healthy, lored_enabled=True))
+
     def test_friendly_data_link_is_safe_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory, patch(
             "saslik.runner.Path.home", return_value=Path(directory)
@@ -89,16 +97,29 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(workspace_commands)
         self.assertTrue(all(command[0] != "sudo" for command in workspace_commands))
 
-    def test_binary_bundle_still_refreshes_pcap_viewer(self):
+    def test_binary_bundle_refreshes_independent_components(self):
         with tempfile.TemporaryDirectory() as directory:
-            runner = LabRunner(Path(directory))
+            runner = LabRunner(Path(directory), devel=True)
             marker = runner.lab / "state/binary-bundle.json"
             marker.parent.mkdir(parents=True)
             marker.write_text("{}", encoding="utf-8")
             commands = [" ".join(command) for command in runner._commands("start", "main")]
         self.assertTrue(any("saslik.workspace viewer-sync" in command for command in commands))
         self.assertTrue(any("saslik.workspace viewer-install" in command for command in commands))
+        self.assertTrue(any("component-sync" in command and "--component lored" in command
+                            for command in commands))
+        self.assertTrue(any("component-build" in command and "--component lored" in command
+                            for command in commands))
         self.assertFalse(any("saslik.workspace build" in command for command in commands))
+
+    def test_lored_is_absent_without_devel_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory))
+            marker = runner.lab / "state/binary-bundle.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("{}", encoding="utf-8")
+            commands = [" ".join(command) for command in runner._commands("start", "main")]
+        self.assertFalse(any("lored" in command for command in commands))
 
     def test_pasta_wraps_runner_network_setup(self):
         with tempfile.TemporaryDirectory() as directory:

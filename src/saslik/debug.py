@@ -12,6 +12,7 @@ DEBUG_COMPONENTS = {
     "smithproxy": ("build/smithproxy/smithproxy", 23450),
     "spider": ("build/spider/smithproxy-spider", 23451),
     "sift": ("build/sift/siftd", 23452),
+    "lored": ("build/lore/lored/lored", 23455),
     "pcap-viewer": ("runtime/pcap-viewer-venv/bin/capture-viewer", 23453),
     "pcap-storage": ("runtime/pcap-viewer-venv/bin/capture-storage", 23454),
 }
@@ -58,7 +59,7 @@ def start_gdbserver(lab: Path, instance: str, expose_address: str,
     gdbserver = shutil.which("gdbserver")
     if not gdbserver:
         raise RuntimeError("Chybí gdbserver. Nainstaluj balíček gdbserver.")
-    status = SystemdComponents(lab, instance, expose_address).status().get(component, {})
+    status = SystemdComponents(lab, instance, expose_address, devel=True).status().get(component, {})
     pid = int(status.get("pid") or 0)
     if status.get("state") != "running" or not pid:
         raise RuntimeError(f"Komponenta {component} neběží.")
