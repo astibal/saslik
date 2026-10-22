@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.licensing import (EntitlementMissing, LicensingError,
-                              install_issuer, license_grant)
+                              bootstrap_issuer, install_issuer,
+                              install_signed_issuer, license_grant)
 
 
 class LicensingTests(unittest.TestCase):
@@ -86,6 +87,31 @@ class LicensingTests(unittest.TestCase):
         self.assertEqual(
             f"INSTALL-ISSUER smithproxy {len(key.encode())}".encode(), command)
         self.assertEqual(key.encode(), body)
+
+    def test_signed_issuer_is_sent_and_cached_only_after_acceptance(self):
+        record = "v=saslik1;issuer=smithproxy;key=abc"
+        path, _ = self.serve("OK issuer=smithproxy")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("saslik.licensing.query_txt", return_value=[record]):
+            lab = Path(directory)
+            self.assertTrue(bootstrap_issuer(lab, socket_path=path))
+            self.assertEqual(record + "\n", (
+                lab / "state/licensing/dns-key.txt").read_text())
+
+    def test_rejected_signed_issuer_is_not_cached(self):
+        record = "v=saslik1;issuer=smithproxy;key=bad"
+        path, _ = self.serve("ERR DNS key record signature is invalid")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("saslik.licensing.query_txt", return_value=[record]):
+            lab = Path(directory)
+            with self.assertRaises(LicensingError):
+                bootstrap_issuer(lab, socket_path=path)
+            self.assertFalse((lab / "state/licensing/dns-key.txt").exists())
+
+    def test_missing_dns_and_cache_is_community_mode(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("saslik.licensing.query_txt", return_value=[]):
+            self.assertFalse(bootstrap_issuer(Path(directory)))
 
 
 if __name__ == "__main__":

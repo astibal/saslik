@@ -32,6 +32,14 @@ signed license -> saslik-licensingd -> Unix socket -> Saslik preflight
                                                     `-- allow-listed arguments
 ```
 
+The normal bootstrap is automatic. Saslik queries
+`_saslik-license.saslik.io` for the current root-signed operational issuer
+key. The C++ daemon—not the DNS client—verifies its signature and validity
+against the root public key pinned at `/etc/saslik/licensing/root.pem`. Only an
+accepted record is cached in `state/licensing/dns-key.txt`, so a temporary DNS
+failure can use the last verified key. Until the TXT record and pinned root key
+exist, startup remains ordinary community mode.
+
 Without a public key or an installed license, Saslik runs in its normal
 community mode and simply omits proprietary additions. Explicitly restarting
 an unlicensed addition reports the missing entitlement without stopping the
@@ -42,11 +50,10 @@ key to an option, while unknown keys are ignored. `lored` is the first declared
 component and requires `component.lored`; Smithproxy, Spider, Sift and the PCAP
 Viewer are not gated by this integration.
 
-The issuer's Ed25519 public key is entered in the selected workspace settings,
-similarly to the IPinfo integration. Before a licensed component starts,
-Saslik sends the key to the daemon using `INSTALL-ISSUER`; the daemon parses the
-key, requires Ed25519 and atomically updates its issuer store. The corresponding
-private signing key must remain offline and is never accepted by this UI.
+The issuer's Ed25519 public key can still be entered in workspace settings as a
+development override, similarly to the IPinfo integration. The corresponding
+private signing and root keys must remain offline and are never accepted by
+this UI.
 
 ```bash
 python3 -m pip install .

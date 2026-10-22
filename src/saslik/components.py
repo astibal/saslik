@@ -14,7 +14,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .licensing import EntitlementMissing, install_issuer, license_grant
+from .licensing import (EntitlementMissing, LicensingError, bootstrap_issuer,
+                        install_issuer, license_grant)
 from .settings import component_environment, component_restart_on_failure, setting_value
 
 
@@ -349,7 +350,17 @@ class SystemdComponents:
         licensed = [component for component in components if component.required_feature]
         if licensed:
             public_key = setting_value(self.lab, "license_issuer_key")
-            if not isinstance(public_key, str) or not public_key.strip():
+            issuer_ready = False
+            if isinstance(public_key, str) and public_key.strip():
+                install_issuer("smithproxy", public_key)
+                issuer_ready = True
+            else:
+                try:
+                    issuer_ready = bootstrap_issuer(self.lab)
+                except LicensingError:
+                    if not skip_unlicensed:
+                        raise
+            if not issuer_ready:
                 if skip_unlicensed:
                     components = [component for component in components
                                   if not component.required_feature]
@@ -357,9 +368,8 @@ class SystemdComponents:
                         component.name: component.command for component in components
                     }
                 raise EntitlementMissing(
-                    "Komponenta vyžaduje licenci; workspace nemá veřejný klíč."
+                    "Komponenta vyžaduje licenci; důvěryhodný licenční klíč není dostupný."
                 )
-            install_issuer("smithproxy", public_key)
 
         runnable: list[Component] = []
         commands: dict[str, tuple[str, ...]] = {}

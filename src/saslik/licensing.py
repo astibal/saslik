@@ -4,6 +4,8 @@ import os
 import socket
 from pathlib import Path
 
+from .dns import DnsLookupError, query_txt
+
 
 DEFAULT_SOCKET = Path("/run/saslik/licensing.sock")
 MAX_RESPONSE = 64 * 1024
@@ -66,6 +68,45 @@ def install_issuer(name: str, public_key: str,
     )
     if response != f"OK issuer={name}":
         raise LicensingError("Licenční služba nepotvrdila veřejný klíč.")
+
+
+def install_signed_issuer(record: str, *, socket_path: Path | None = None) -> None:
+    encoded_size = len(record.encode("utf-8"))
+    response = _query(
+        f"INSTALL-SIGNED-ISSUER {encoded_size}", record,
+        socket_path=socket_path,
+    )
+    if not response.startswith("OK issuer="):
+        raise LicensingError("Licenční služba nepotvrdila DNS klíč.")
+
+
+def bootstrap_issuer(lab: Path, *, socket_path: Path | None = None) -> bool:
+    """Install a root-signed operational key from DNS, or its verified cache."""
+    name = os.environ.get("SASLIK_LICENSE_DNS_NAME", "_saslik-license.saslik.io")
+    cache = lab / "state/licensing/dns-key.txt"
+    record: str | None = None
+    try:
+        record = next((value for value in query_txt(name)
+                       if value.startswith("v=saslik1;")), None)
+    except DnsLookupError:
+        pass
+
+    if record is not None:
+        install_signed_issuer(record, socket_path=socket_path)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache.with_suffix(".tmp")
+        temporary.write_text(record + "\n", encoding="ascii")
+        temporary.replace(cache)
+        return True
+
+    try:
+        cached = cache.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    if not cached:
+        return False
+    install_signed_issuer(cached, socket_path=socket_path)
+    return True
 
 
 def license_grant(feature: str, component: str,
