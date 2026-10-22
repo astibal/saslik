@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .licensing import install_issuer, license_grant
+from .licensing import EntitlementMissing, install_issuer, license_grant
 from .settings import component_environment, component_restart_on_failure, setting_value
 
 
@@ -343,25 +343,41 @@ class SystemdComponents:
         command.extend(runtime_command)
         _run(command)
 
-    def _preflight_licenses(self, components: list[Component]) -> dict[str, tuple[str, ...]]:
+    def _preflight_licenses(
+            self, components: list[Component], *, skip_unlicensed: bool = False,
+    ) -> tuple[list[Component], dict[str, tuple[str, ...]]]:
         licensed = [component for component in components if component.required_feature]
         if licensed:
             public_key = setting_value(self.lab, "license_issuer_key")
             if not isinstance(public_key, str) or not public_key.strip():
-                raise RuntimeError(
-                    "Chybí veřejný klíč vydavatele licencí v nastavení workspace."
+                if skip_unlicensed:
+                    components = [component for component in components
+                                  if not component.required_feature]
+                    return components, {
+                        component.name: component.command for component in components
+                    }
+                raise EntitlementMissing(
+                    "Komponenta vyžaduje licenci; workspace nemá veřejný klíč."
                 )
             install_issuer("smithproxy", public_key)
-        return {
-            component.name: SystemdComponents._licensed_command(component)
-            for component in components
-        }
+
+        runnable: list[Component] = []
+        commands: dict[str, tuple[str, ...]] = {}
+        for component in components:
+            try:
+                commands[component.name] = self._licensed_command(component)
+                runnable.append(component)
+            except EntitlementMissing:
+                if not skip_unlicensed:
+                    raise
+        return runnable, commands
 
     def up(self) -> None:
         self._check_assets()
         self.state.mkdir(parents=True, exist_ok=True)
         components = self.components()
-        runtime_commands = self._preflight_licenses(components)
+        components, runtime_commands = self._preflight_licenses(
+            components, skip_unlicensed=True)
         self.down()
         self._stop_legacy_processes()
         try:
@@ -369,7 +385,7 @@ class SystemdComponents:
                 self._start_component(component, runtime_commands[component.name])
                 if component.name == "pcap-storage":
                     self._wait_storage_ready()
-            self._wait_ready()
+            self._wait_ready({component.name for component in components})
             self.print_endpoints()
         except Exception:
             self.down()
@@ -415,7 +431,7 @@ class SystemdComponents:
         if len(components) != len(selected):
             missing = sorted(selected.difference(item.name for item in components))
             raise RuntimeError("Chybí runtime komponenty: " + ", ".join(missing))
-        runtime_commands = self._preflight_licenses(components)
+        components, runtime_commands = self._preflight_licenses(components)
         self.stop_component(component)
         for item in components:
             self._start_component(item, runtime_commands[item.name])
@@ -463,13 +479,15 @@ class SystemdComponents:
             }
         return result
 
-    def _wait_ready(self) -> None:
+    def _wait_ready(self, running_components: set[str] | None = None) -> None:
+        if running_components is None:
+            running_components = {component.name for component in self.components()}
         values = _state_env(self.lab)
         checks = [(values["SMITHPROXY_API_URL"] + "/api/status/ping",
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
         checks.append(("http://127.0.0.1:18080/api/health", {}, False))
         checks.append(("http://127.0.0.1:18081/api/health", {}, False))
-        if self.devel and (self.lab / "build/lore/lored/lored").is_file():
+        if "lored" in running_components:
             checks.append(("http://127.0.0.1:8091/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             checks.append(("http://127.0.0.1:15174/readyz", {}, False))

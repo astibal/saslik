@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.licensing import LicensingError, install_issuer, license_grant
+from saslik.licensing import (EntitlementMissing, LicensingError,
+                              install_issuer, license_grant)
 
 
 class LicensingTests(unittest.TestCase):
@@ -43,7 +44,7 @@ class LicensingTests(unittest.TestCase):
 
     def test_missing_entitlement_is_explicit(self):
         path, _ = self.serve("OK 0")
-        with self.assertRaisesRegex(LicensingError, "component.demo"):
+        with self.assertRaisesRegex(EntitlementMissing, "component.demo"):
             license_grant("component.demo", "demo", socket_path=path)
 
     def test_unavailable_daemon_fails_closed(self):

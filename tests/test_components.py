@@ -213,6 +213,19 @@ class ComponentTests(unittest.TestCase):
                 manager.restart_component("demo")
         run.assert_not_called()
 
+    def test_initial_start_skips_licensed_component_without_public_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SystemdComponents(Path(directory), "lab1")
+            community = Component("community", ("/bin/true",), Path("community.log"))
+            licensed = Component(
+                "pro", ("/bin/pro",), Path("pro.log"),
+                required_feature="component.pro",
+            )
+            runnable, commands = manager._preflight_licenses(
+                [community, licensed], skip_unlicensed=True)
+        self.assertEqual([community], runnable)
+        self.assertEqual({"community": community.command}, commands)
+
     @patch("saslik.components._run")
     def test_component_is_started_as_transient_service_in_lab_slice(self, run):
         with tempfile.TemporaryDirectory() as directory:

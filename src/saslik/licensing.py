@@ -13,6 +13,10 @@ class LicensingError(RuntimeError):
     """The local licensing facade is unavailable or returned invalid data."""
 
 
+class EntitlementMissing(LicensingError):
+    """The facade is healthy, but the requested feature is not licensed."""
+
+
 def _socket_path() -> Path:
     return Path(os.environ.get("SASLIK_LICENSING_SOCKET", str(DEFAULT_SOCKET)))
 
@@ -70,7 +74,7 @@ def license_grant(feature: str, component: str,
     entitlement = _query(f"HAS {feature}", socket_path=socket_path)
     if entitlement != "OK 1":
         if entitlement == "OK 0":
-            raise LicensingError(
+            raise EntitlementMissing(
                 f"Komponenta {component} vyžaduje licenci s funkcí {feature}."
             )
         raise LicensingError("Licenční služba poslala neplatný stav oprávnění.")

@@ -32,8 +32,11 @@ signed license -> saslik-licensingd -> Unix socket -> Saslik preflight
                                                     `-- allow-listed arguments
 ```
 
-The check is fail-closed only for the proprietary component. A failed check
-happens before an existing service is stopped. License-supplied text is never
+Without a public key or an installed license, Saslik runs in its normal
+community mode and simply omits proprietary additions. Explicitly restarting
+an unlicensed addition reports the missing entitlement without stopping the
+running lab. A configured but broken key or unavailable licensing service is
+reported as a configuration error. License-supplied text is never
 used as a command line: each component adapter must explicitly map an allowed
 key to an option, while unknown keys are ignored. `lored` is the first declared
 component and requires `component.lored`; Smithproxy, Spider, Sift and the PCAP
