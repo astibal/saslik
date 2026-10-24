@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Saslik · Sign in</title>
+  <link rel="stylesheet" href="/login.css">
+  <link rel="stylesheet" href="/login-connect.css">
+</head>
+<body>
+  <main class="login-shell">
+    <section class="login-scene" aria-hidden="true">
+      <div class="scene-screen"></div>
+      <blockquote>“{{MOTTO}}”</blockquote>
+    </section>
+    <section class="login-panel">
+      <header><span class="mark">⌁⌁⌁</span><b>Saslik</b></header>
+      <div class="login-copy">
+        <small>SMITHPROXY LAB</small>
+        <h1>{{TITLE}}</h1>
+        <p>{{SUBTITLE}}</p>
+      </div>
+      {{ERROR}}
+      {{FORM}}
+      <a class="connect-link" href="/connect"><span>Connect It</span><small>Use this lab without administrator access</small><b>→</b></a>
+      <footer>local · isolated · repeatable</footer>
+    </section>
+  </main>
+</body>
+</html>

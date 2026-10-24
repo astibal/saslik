@@ -2,11 +2,11 @@ import os
 import ssl
 import tempfile
 import threading
+import time
 import unittest
 import json
 from pathlib import Path
-from http.server import ThreadingHTTPServer
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from unittest.mock import MagicMock, patch
 
 from saslik.portal_tls import CERTIFICATE_DAYS, details, ensure, generate, subject_names
@@ -45,7 +45,8 @@ class PortalTlsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             certificate, key = generate(Path(temporary), "127.0.0.1")
             runner = MagicMock()
-            server = SaslikServer(("127.0.0.1", 0), runner)
+            server = SaslikServer(("127.0.0.1", 0), runner, log_root=Path(temporary))
+            server.portal_sessions["tls-test"] = time.monotonic() + 60
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(certificate, key)
             server.tls_context = context
@@ -55,14 +56,17 @@ class PortalTlsTests(unittest.TestCase):
             worker.start()
             try:
                 client = ssl._create_unverified_context()
-                with urlopen(f"https://127.0.0.1:{server.server_port}/api/portal-tls",
-                             context=client, timeout=3) as response:
+                request = Request(
+                    f"https://127.0.0.1:{server.server_port}/api/portal-tls",
+                    headers={"Cookie": "saslik_session=tls-test"},
+                )
+                with urlopen(request, context=client, timeout=3) as response:
                     value = json.load(response)
                 self.assertEqual(details(certificate), value)
             finally:
                 server.shutdown()
                 worker.join(timeout=3)
-                ThreadingHTTPServer.server_close(server)
+                server.server_close()
 
 
 if __name__ == "__main__":

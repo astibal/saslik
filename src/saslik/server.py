@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import html
 import ipaddress
 import io
 import mimetypes
@@ -21,6 +22,9 @@ import time
 import webbrowser
 import zipfile
 from .licensing import tunnel_features
+from .portal_auth import (ensure_portal_credentials, portal_account_info,
+                          record_portal_login, set_portal_password,
+                          verify_portal_password)
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -422,6 +426,13 @@ class SaslikServer(ThreadingHTTPServer):
         self.runner = runner
         self.devel = devel
         self.csrf = secrets.token_urlsafe(24)
+        self.portal_username, self.portal_configured, self.portal_credentials_path = \
+            ensure_portal_credentials(log_root or runner.root)
+        self.portal_auth_lock = threading.Lock()
+        self.portal_sessions: dict[str, float] = {}
+        self.portal_sessions_lock = threading.Lock()
+        self.login_failures: dict[str, list[float]] = {}
+        self.login_failures_lock = threading.Lock()
         self.cli_sessions: dict[str, CliSession] = {}
         self.gdb_sessions: dict[str, GdbSession] = {}
         self.cli_lock = threading.Lock()
@@ -531,9 +542,217 @@ class SaslikServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     server: SaslikServer
 
+    def _portal_token(self) -> str:
+        header = self.headers.get("Cookie", "")
+        return next((part.strip().split("=", 1)[1] for part in header.split(";")
+                     if part.strip().startswith("saslik_session=")), "")
+
+    def _portal_session(self) -> bool:
+        token = self._portal_token()
+        now = time.monotonic()
+        with self.server.portal_sessions_lock:
+            expired = [key for key, deadline in self.server.portal_sessions.items()
+                       if deadline <= now]
+            for key in expired:
+                del self.server.portal_sessions[key]
+            return bool(token and self.server.portal_sessions.get(token, 0) > now)
+
+    def _portal_session_remaining(self) -> int:
+        token = self._portal_token()
+        with self.server.portal_sessions_lock:
+            return max(0, int(self.server.portal_sessions.get(token, 0) - time.monotonic()))
+
+    def _login_page(self, *, error: str = "", status: HTTPStatus = HTTPStatus.OK) -> None:
+        template = files("saslik.web").joinpath("login.html").read_text(encoding="utf-8")
+        mottos = [line.strip() for line in files("saslik.web").joinpath("mottos.txt")
+                  .read_text(encoding="utf-8").splitlines() if line.strip()]
+        message = f'<p class="login-error">{html.escape(error)}</p>' if error else ""
+        if self.server.portal_configured:
+            title = "Welcome back."
+            subtitle = "Sign in to manage this Saslik appliance."
+            form = (
+                '<form method="post" action="/login" autocomplete="on">'
+                '<label>Username<input name="username" value="saslik" '
+                'autocomplete="username" required autofocus></label>'
+                '<label>Password<input name="password" type="password" '
+                'autocomplete="current-password" required></label>'
+                '<button type="submit">Enter the lab <span>→</span></button></form>'
+            )
+        else:
+            title = "Claim your Saslik."
+            subtitle = "Create the administrator password for this new appliance."
+            form = (
+                '<form method="post" action="/setup" autocomplete="off">'
+                '<p class="setup-note">First-access setup is open until this password is saved. '
+                'Connect the appliance only to a trusted network.</p>'
+                '<label>New password<input name="password" type="password" '
+                'autocomplete="new-password" minlength="12" maxlength="128" required autofocus></label>'
+                '<label>Repeat password<input name="confirm" type="password" '
+                'autocomplete="new-password" minlength="12" maxlength="128" required></label>'
+                '<button type="submit">Claim appliance <span>→</span></button></form>'
+            )
+        data = template.replace("{{MOTTO}}", html.escape(secrets.choice(mottos))) \
+                       .replace("{{TITLE}}", title).replace("{{SUBTITLE}}", subtitle) \
+                       .replace("{{FORM}}", form).replace("{{ERROR}}", message).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _require_portal_session(self, path: str) -> bool:
+        if self._portal_session():
+            return True
+        if path.startswith("/api/"):
+            self._json({"error": "Authentication required"}, HTTPStatus.UNAUTHORIZED)
+        else:
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/login")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        return False
+
+    def _connect_info(self) -> None:
+        """Return only connection data that is safe to show before login."""
+        snapshot = self.server.runner.snapshot()
+        endpoints = snapshot.get("endpoints", {})
+        definitions = (
+            ("proxy", "PROXY", "HTTP CONNECT", "Set this proxy in your browser or application.", False, "#60e69a"),
+            ("spider_ui", "APPLICATION", "Smithproxy Spider", "Live traffic browser and scripting workbench.", True, "#ff6b35"),
+            ("pcap_viewer", "APPLICATION", "CZ PCAP Viewer", "Open captures stored by this lab.", True, "#54b8ff"),
+            ("smithproxy_api", "API", "Smithproxy API", "Machine-readable proxy control and telemetry endpoint.", True, "#b889ff"),
+            ("sift", "API", "Sift API", "Payload analysis and enrichment endpoint.", True, "#e6bd60"),
+        )
+        items = [
+            {"kind": kind, "title": title, "description": description,
+             "url": endpoints[key], "open": opened, "color": color}
+            for key, kind, title, description, opened, color in definitions
+            if isinstance(endpoints.get(key), str) and endpoints[key]
+        ]
+        items.extend((
+            {"kind": "TRUST", "title": "Certificate Authority",
+             "description": "Install this CA to trust TLS intercepted by the lab.",
+             "url": "/connect/ca.pem", "open": True, "color": "#60e69a"},
+            {"kind": "CLIENT", "title": "Skewer",
+             "description": "Connect a client and select applications routed through the lab.",
+             "url": "/api/skewer", "open": False, "color": "#ff8055"},
+        ))
+        services = snapshot.get("services", {})
+        self._json({"items": items, "running": any(
+            isinstance(service, dict) and service.get("state") == "running"
+            for service in services.values())})
+
+    def _login(self) -> None:
+        if not self.server.portal_configured:
+            return self._login_page()
+        peer = self.client_address[0] if self.client_address else "unknown"
+        now = time.monotonic()
+        with self.server.login_failures_lock:
+            failures = [stamp for stamp in self.server.login_failures.get(peer, [])
+                        if now - stamp < 60]
+            self.server.login_failures[peer] = failures
+        if len(failures) >= 5:
+            return self._login_page(error="Too many attempts. Try again in a minute.",
+                                    status=HTTPStatus.TOO_MANY_REQUESTS)
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 4096:
+                raise ValueError
+            form = parse_qs(self.rfile.read(size).decode("utf-8"), keep_blank_values=True)
+            username = form.get("username", [""])[0]
+            password = form.get("password", [""])[0]
+        except (ValueError, UnicodeDecodeError):
+            return self._login_page(error="Invalid login request.", status=HTTPStatus.BAD_REQUEST)
+        if not (secrets.compare_digest(username, self.server.portal_username)
+                and verify_portal_password(self.server.portal_credentials_path, password)):
+            with self.server.login_failures_lock:
+                self.server.login_failures.setdefault(peer, failures).append(now)
+            return self._login_page(error="The username or password is incorrect.",
+                                    status=HTTPStatus.FORBIDDEN)
+        with self.server.login_failures_lock:
+            self.server.login_failures.pop(peer, None)
+        with self.server.portal_auth_lock:
+            record_portal_login(self.server.portal_credentials_path)
+        return self._issue_session()
+
+    def _setup(self) -> None:
+        if self.server.portal_configured:
+            return self._login_page(error="This appliance has already been claimed.",
+                                    status=HTTPStatus.CONFLICT)
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 4096:
+                raise ValueError
+            form = parse_qs(self.rfile.read(size).decode("utf-8"), keep_blank_values=True)
+            password = form.get("password", [""])[0]
+            confirm = form.get("confirm", [""])[0]
+            if password != confirm:
+                return self._login_page(error="The passwords do not match.",
+                                        status=HTTPStatus.BAD_REQUEST)
+            with self.server.portal_auth_lock:
+                if self.server.portal_configured:
+                    raise RuntimeError("This appliance has already been claimed.")
+                set_portal_password(self.server.portal_credentials_path, password)
+                self.server.portal_configured = True
+        except ValueError as exc:
+            return self._login_page(error=str(exc) or "Invalid setup request.",
+                                    status=HTTPStatus.BAD_REQUEST)
+        except (UnicodeDecodeError, RuntimeError) as exc:
+            return self._login_page(error=str(exc), status=HTTPStatus.CONFLICT)
+        return self._issue_session()
+
+    def _issue_session(self) -> None:
+        now = time.monotonic()
+        token = secrets.token_urlsafe(32)
+        with self.server.portal_sessions_lock:
+            self.server.portal_sessions[token] = now + 12 * 60 * 60
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", f"saslik_session={token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/login":
+            if self._portal_session():
+                self.send_response(HTTPStatus.SEE_OTHER)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            return self._login_page()
+        if path == "/logout":
+            token = self._portal_token()
+            with self.server.portal_sessions_lock:
+                self.server.portal_sessions.pop(token, None)
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/login")
+            self.send_header("Set-Cookie", "saslik_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if path == "/connect":
+            return self._asset("/connect.html")
+        if path == "/api/connect":
+            return self._connect_info()
+        if path == "/connect/ca.pem":
+            return self._ca()
+        public_downloads = {
+            "/downloads/skewer-linux-amd64.deb",
+            "/downloads/tuntom-linux-amd64.deb",
+            "/downloads/tuntom_amd64.deb",
+            "/downloads/tuntom_arm64.deb",
+        }
+        public_assets = {"/login.css", "/login-connect.css", "/connect.css", "/connect.js",
+                         "/saslik-mark.svg", "/card-scenes/cli.png"}
+        if path in public_assets:
+            return self._asset(path)
+        if path not in public_downloads and path != "/api/skewer" \
+                and not self._require_portal_session(path):
+            return
         if path == "/api/status":
             snapshot = self.server.runner.snapshot()
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
@@ -570,7 +789,10 @@ class Handler(BaseHTTPRequestHandler):
             reports.sort(key=lambda report: report["hostname"].casefold())
             return self._json({"reports": reports})
         if path == "/api/session":
-            return self._json({"csrf": self.server.csrf, "devel": self.server.devel})
+            account = portal_account_info(self.server.portal_credentials_path)
+            return self._json({"csrf": self.server.csrf, "devel": self.server.devel,
+                               "username": self.server.portal_username,
+                               "expires_in": self._portal_session_remaining(), **account})
         if path == "/api/identity":
             services = self.server.runner._service_status()
             running = self.server.runner.operation_running() or any(
@@ -872,8 +1094,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/login":
+            return self._login()
+        if path == "/setup":
+            return self._setup()
+        # The one-time, origin-bound bootstrap code is the authentication
+        # capability. Spider cannot possess the portal's browser cookie.
         if path == "/api/spider/bootstrap/redeem":
             return self._spider_bootstrap_redeem()
+        if not self._require_portal_session(path):
+            return
         if path == "/api/skewer/report":
             try:
                 declared = int(self.headers.get("Content-Length", "0"))
@@ -938,7 +1168,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/workspace/action", "/api/workspace/settings",
                         "/api/crashes/clear", "/api/crashes/diagnose",
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
-                        "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew"}:
+                        "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
+                        "/api/account/password"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -950,6 +1181,23 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/account/password":
+                current = str(body.get("current", ""))
+                password = str(body.get("password", ""))
+                if not verify_portal_password(self.server.portal_credentials_path, current):
+                    return self._json({"error": "Současné heslo není správné."},
+                                      HTTPStatus.BAD_REQUEST)
+                try:
+                    set_portal_password(self.server.portal_credentials_path, password)
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                token = self._portal_token()
+                with self.server.portal_sessions_lock:
+                    deadline = self.server.portal_sessions.get(token, 0)
+                    self.server.portal_sessions.clear()
+                    if deadline > time.monotonic():
+                        self.server.portal_sessions[token] = deadline
+                return self._json({"ok": True})
             if path == "/api/portal-tls/renew":
                 with self.server.tls_lock:
                     certificate, key = generate_portal_tls(data_root() / "portal-tls",
@@ -1619,6 +1867,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         f"component-{action.removesuffix('-component')}", component=component)
     url = f"https://{host}:{server.server_port}/"
     print(f"Saslik hoří na {url}")
+    if server.portal_configured:
+        print("Portal login: účet saslik je nakonfigurovaný.")
+    else:
+        print(f"Portal login: první návštěva {url} nastaví heslo účtu saslik.")
     if devel:
         print("Dev režim je zapnutý; UI může měnit zdrojové checkouty workspace.")
     print(f"App okno spustíš ručně: {app_launch_command(url)}")
