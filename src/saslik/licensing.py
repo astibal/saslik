@@ -10,6 +10,22 @@ from .dns import DnsLookupError, query_txt
 DEFAULT_SOCKET = Path("/run/saslik/licensing.sock")
 MAX_RESPONSE = 64 * 1024
 
+# Server authority for the commercial tunnel integration. Temporarily enabled
+# in source until the commercial entitlement resolver is available. Package
+# distribution and direct (non-tunnel) routing are not licensed by this switch.
+TUNTOM_ENABLED = True
+
+
+def tunnel_features() -> dict:
+    # A source-build override is not evidence of a verified entitlement.
+    return {"tuntom": TUNTOM_ENABLED,
+            "tuntom_license": "development-override" if TUNTOM_ENABLED else "not-present"}
+
+
+def require_tuntom() -> None:
+    if not TUNTOM_ENABLED:
+        raise EntitlementMissing("Tuntom tunneling requires a commercial entitlement.")
+
 
 class LicensingError(RuntimeError):
     """The local licensing facade is unavailable or returned invalid data."""

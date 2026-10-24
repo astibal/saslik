@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 SETTINGS = {
+    "source_tuntom": {"label": "Tuntom source", "secret": False, "default": "src", "choices": ("src",)},
+    "ref_tuntom": {"label": "Tuntom branch / ref", "secret": False, "default": "main"},
     "ipinfo_token": {
         "label": "ipinfo.io API token",
         "description": "Geolokační enrichment v CZ PCAP Vieweru.",

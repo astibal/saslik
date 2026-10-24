@@ -3,6 +3,11 @@
     grid-template-columns: minmax(120px, .8fr) 72px minmax(180px, 1.4fr) minmax(130px, .7fr) 105px;
 }
 
+.component-row[data-component="tuntom"] > span[title] {
+    color: var(--muted);
+    font-size: 8px;
+}
+
 .state-cluster {
     display: grid;
     justify-items: center;

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import ipaddress
 import os
+import pwd
 import secrets
 import shutil
 import signal
@@ -23,6 +25,8 @@ NAMESPACE = "sxp-test"
 PROBE_NAMESPACE = "saslik-probe"
 NS_ADDR = "10.254.77.2"
 HOST_ADDR = "10.254.77.1"
+SPIDER_FRONTEND_PORT = 25173
+PCAP_VIEWER_PORT = 25174
 
 
 def _run(command: list[str], *, tolerate: bool = False,
@@ -76,6 +80,7 @@ class Component:
     restart_on_failure: bool = False
     required_feature: str | None = None
     licensed_arguments: tuple[tuple[str, str], ...] = ()
+    environment_files: tuple[Path, ...] = ()
 
 
 class SystemdComponents:
@@ -110,6 +115,30 @@ class SystemdComponents:
     @property
     def slice_name(self) -> str:
         return f"saslik-{_unit_instance(self.instance)}.slice"
+
+    @property
+    def tuntom_binary(self) -> Path:
+        # Like the other source components, this is a locally managed runtime;
+        # remote tunnel requests cannot supply an executable path.
+        return self.lab / "runtime/tuntom/tuntom"
+
+    def prepare_tuntom(self) -> None:
+        """Prepare the non-login account used after Tuntom drops privileges."""
+        if not self.tuntom_binary.is_file() or not os.access(self.tuntom_binary, os.X_OK):
+            raise RuntimeError("Tuntom ještě není sestavený. Aktualizuj komponentu Tuntom.")
+        try:
+            group = grp.getgrnam("tuntom")
+        except KeyError:
+            _run(["groupadd", "--system", "tuntom"])
+            group = grp.getgrnam("tuntom")
+        try:
+            user = pwd.getpwnam("tuntom")
+        except KeyError:
+            _run(["useradd", "--system", "--gid", "tuntom", "--no-create-home",
+                  "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", "tuntom"])
+            user = pwd.getpwnam("tuntom")
+        if user.pw_uid == 0 or user.pw_gid == 0 or group.gr_gid == 0:
+            raise RuntimeError("Tuntom runtime účet nesmí mít root UID/GID.")
 
     def build_auxiliaries(self) -> None:
         spider_source = self.lab / "src/smithproxy-spider"
@@ -151,6 +180,21 @@ class SystemdComponents:
         frontend_server = self.lab / "src/smithproxy-spider/tools/serve-frontend.py"
         frontend_command = ((python, str(frontend_server)) if frontend_server.is_file()
                             else (python, "-m", "http.server"))
+        portal_tls = self.lab.parent.parent / "portal-tls"
+        portal_certificate = portal_tls / "certificate.pem"
+        portal_key = portal_tls / "private-key.pem"
+
+        def tls_relay(name: str, public_port: int, upstream_port: int) -> Component:
+            listen = (
+                f"OPENSSL-LISTEN:{public_port},bind={self.expose_address},reuseaddr,fork,"
+                f"cert={portal_certificate},key={portal_key},verify=0"
+            )
+            return Component(
+                name,
+                (socat, listen, f"TCP4:127.0.0.1:{upstream_port}"),
+                self.state / f"{name}.log",
+                restart_on_failure=True,
+            )
         result = [
             Component(
                 "smithproxy",
@@ -180,7 +224,6 @@ class SystemdComponents:
                           "--port", "8091"),
                 self.state / "lored.log",
                 restart_on_failure=component_restart_on_failure(self.lab, "lored"),
-                required_feature="component.lored",
             ))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
@@ -196,11 +239,12 @@ class SystemdComponents:
                 (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
                  "--storage-token-file", str(viewer_workspace / "storage.token"),
                  "--capacity-profile", "desktop", "--theme-fixed", "saslik",
-                 "--port", "15174", "--no-browser"),
+                 "--port", str(PCAP_VIEWER_PORT), "--no-browser"),
                 self.state / "pcap-viewer.log",
                 component_environment(self.lab, "pcap-viewer"),
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
+            result.append(tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
         result.extend([
                 Component(
                     "spider",
@@ -215,10 +259,11 @@ class SystemdComponents:
                 ),
                 Component(
                     "frontend",
-                    (*frontend_command, "15173", "--bind", "0.0.0.0",
+                    (*frontend_command, str(SPIDER_FRONTEND_PORT), "--bind", "127.0.0.1",
                      "--directory", str(self.state / "frontend")),
                     self.state / "frontend.log",
                 ),
+                tls_relay("frontend-tls", 15173, SPIDER_FRONTEND_PORT),
         ])
         for name, port in (("api", 55580), ("proxy", 33128), ("cli", 55000)):
             result.append(Component(
@@ -279,6 +324,68 @@ class SystemdComponents:
                     except (ProcessLookupError, PermissionError):
                         pass
         (self.state / "service.pid").unlink(missing_ok=True)
+
+    @staticmethod
+    def _saslik_forwarder_command(command: str) -> bool:
+        """Recognize only socat relays using Saslik's fixed port topology."""
+        if "socat" not in command:
+            return False
+        pairs = (
+            ("TCP4-LISTEN:55580", f"TCP4:{NS_ADDR}:55580"),
+            ("TCP4-LISTEN:33128", f"TCP4:{NS_ADDR}:33128"),
+            ("TCP4-LISTEN:55000", f"TCP4:{NS_ADDR}:55000"),
+            (f"TCP4-LISTEN:55000,bind={NS_ADDR}", "TCP4:127.0.0.1:55000"),
+            ("OPENSSL-LISTEN:15173", f"TCP4:127.0.0.1:{SPIDER_FRONTEND_PORT}"),
+            ("OPENSSL-LISTEN:15174", f"TCP4:127.0.0.1:{PCAP_VIEWER_PORT}"),
+        )
+        return any(listener in command and target in command for listener, target in pairs)
+
+    def _saslik_runtime_command(self, command: str) -> bool:
+        executables = (
+            self.lab / "build/smithproxy/smithproxy",
+            self.lab / "build/spider/smithproxy-spider",
+            self.lab / "build/sift/siftd",
+            self.lab / "build/lore/lored/lored",
+            self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer",
+            self.lab / "runtime/pcap-viewer-venv/bin/capture-storage",
+        )
+        return self._saslik_forwarder_command(command) or any(
+            str(executable) in command for executable in executables
+        )
+
+    def _stop_stale_forwarders(self) -> None:
+        """Remove relay processes left behind by pre-control-group units.
+
+        Current transient units have KillMode=control-group. This migration
+        guard is deliberately command-specific so it cannot kill an unrelated
+        service merely because it happens to use one of the same ports.
+        """
+        stopped: list[int] = []
+        for process in Path("/proc").glob("[0-9]*"):
+            try:
+                pid = int(process.name)
+                command = process.joinpath("cmdline").read_bytes().replace(
+                    b"\0", b" ").decode("utf-8")
+                if pid != os.getpid() and self._saslik_runtime_command(command):
+                    print(f"Sanity cleanup: ukončuji osiřelý runtime PID {pid}: {command}")
+                    os.kill(pid, signal.SIGTERM)
+                    stopped.append(pid)
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+        deadline = time.monotonic() + 2
+        while stopped and time.monotonic() < deadline:
+            stopped = [pid for pid in stopped if Path(f"/proc/{pid}").exists()]
+            if stopped:
+                time.sleep(0.05)
+        for pid in stopped:
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(
+                    b"\0", b" ").decode("utf-8")
+                if self._saslik_runtime_command(command):
+                    print(f"Sanity cleanup: PID {pid} nereagoval, posílám SIGKILL.")
+                    os.kill(pid, signal.SIGKILL)
+            except (OSError, UnicodeDecodeError):
+                pass
 
     def _legacy_pid_matches(self, filename: str, pid: int) -> bool:
         try:
@@ -341,6 +448,8 @@ class SystemdComponents:
             command.append(f"--property=BindPaths={source}:{destination}")
         for value in component.environment:
             command.append(f"--setenv={value}")
+        for path in component.environment_files:
+            command.append(f"--property=EnvironmentFile={path}")
         command.extend(runtime_command)
         _run(command)
 
@@ -409,16 +518,17 @@ class SystemdComponents:
             unit = unit_name(self.instance, component.name)
             _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
             _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
+        self._stop_stale_forwarders()
         self._stop_legacy_processes()
 
     @staticmethod
     def component_group(component: str) -> tuple[str, ...]:
         groups = {
             "smithproxy": ("smithproxy",),
-            "spider": ("spider", "frontend"),
+            "spider": ("spider", "frontend", "frontend-tls"),
             "sift": ("sift",),
             "lored": ("lored",),
-            "pcap-viewer": ("pcap-storage", "pcap-viewer"),
+            "pcap-viewer": ("pcap-storage", "pcap-viewer", "pcap-viewer-tls"),
         }
         try:
             return groups[component]
@@ -427,6 +537,11 @@ class SystemdComponents:
 
     def stop_component(self, component: str) -> None:
         """Stop only the services owned by one updatable component."""
+        if component == "tuntom":
+            # The guardian releases leases first. This also handles CLI use
+            # and orphaned endpoints without touching other lab services.
+            _run(["systemctl", "stop", unit_name(self.instance, "tuntom-*")])
+            return
         for name in reversed(self.component_group(component)):
             unit = unit_name(self.instance, name)
             _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
@@ -434,6 +549,11 @@ class SystemdComponents:
 
     def restart_component(self, component: str) -> None:
         """Recreate only the selected component's transient services."""
+        if component == "tuntom":
+            self.prepare_tuntom()
+            self.stop_component(component)
+            # Endpoints need per-client credentials and are started on demand.
+            return
         if component == "spider":
             self.build_auxiliaries()
         selected = set(self.component_group(component))
@@ -453,14 +573,16 @@ class SystemdComponents:
             return self.components()
         except (OSError, KeyError):
             names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                     "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+                     "frontend-tls", "pcap-storage", "pcap-viewer", "pcap-viewer-tls",
+                     "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
             if self.devel:
                 names += ("lored",)
             return [Component(name, (), self.state / f"{name}.log") for name in names]
 
     def status(self) -> dict[str, dict[str, str | int | None]]:
         names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                 "pcap-storage", "pcap-viewer", "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
+                 "frontend-tls", "pcap-storage", "pcap-viewer", "pcap-viewer-tls",
+                 "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
         if self.devel:
             names += ("lored",)
         units = {unit_name(self.instance, name): name for name in names}
@@ -497,10 +619,12 @@ class SystemdComponents:
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
         checks.append(("http://127.0.0.1:18080/api/health", {}, False))
         checks.append(("http://127.0.0.1:18081/api/health", {}, False))
+        checks.append(("https://127.0.0.1:15173/", {}, True))
         if "lored" in running_components:
             checks.append(("http://127.0.0.1:8091/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            checks.append(("http://127.0.0.1:15174/readyz", {}, False))
+            checks.append((f"http://127.0.0.1:{PCAP_VIEWER_PORT}/readyz", {}, False))
+            checks.append(("https://127.0.0.1:15174/readyz", {}, True))
         pending = list(checks)
         deadline = time.monotonic() + 30
         while pending and time.monotonic() < deadline:
@@ -561,11 +685,11 @@ class SystemdComponents:
         print("  CLI:          127.0.0.1:55000")
         print(f"  CA:           {values['SMITHPROXY_CA_CERT']}")
         print("Spider:")
-        print("  UI:      http://127.0.0.1:15173/")
+        print("  UI:      https://127.0.0.1:15173/")
         print("  Backend: http://127.0.0.1:18080")
         print("  Sift:    http://127.0.0.1:18081/api/status")
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            print("PCAP Viewer: http://127.0.0.1:15174/")
+            print("PCAP Viewer: https://127.0.0.1:15174/")
         print(f"Logs:    journalctl -u 'saslik-{_unit_instance(self.instance)}-*'")
 
 
@@ -577,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance", default="default")
     parser.add_argument("--expose-address", default="127.0.0.1")
     parser.add_argument("--devel", action="store_true")
-    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer"))
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"))
     args = parser.parse_args(argv)
     manager = SystemdComponents(args.lab, args.instance, args.expose_address, devel=args.devel)
     try:

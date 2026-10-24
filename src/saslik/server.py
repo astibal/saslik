@@ -12,6 +12,7 @@ import secrets
 import select
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -19,12 +20,15 @@ import tempfile
 import time
 import webbrowser
 import zipfile
+from .licensing import tunnel_features
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 from .runner import LabRunner, data_root
 from .ca import install_store, remove_store, store_status
@@ -41,14 +45,57 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
+from .dev_queries import run_query as run_dev_query
 from .network import HOST_IF, NS_ADDR
 from .pairing import PairingStore, PskServer
+from .portal_tls import details as portal_tls_details
+from .portal_tls import ensure as ensure_portal_tls
+from .portal_tls import generate as generate_portal_tls
 
 
 APP_BROWSERS = (
     "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
     "microsoft-edge", "microsoft-edge-stable", "brave-browser", "vivaldi-stable", "vivaldi",
 )
+
+SKEWER_DEB_URL = (
+    "https://github.com/astibal/saslik-skewer/releases/latest/download/"
+    "skewer-linux-amd64.deb"
+)
+SKEWER_DEB_HOSTS = {
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
+SKEWER_DEB_MAX_BYTES = 256 * 1024 * 1024
+
+
+def fetch_skewer_deb():
+    """Fetch the fixed Skewer bootstrap package without becoming an open proxy."""
+    response = urlopen(SKEWER_DEB_URL, timeout=30)
+    final_url = urlparse(response.geturl())
+    if final_url.scheme != "https" or final_url.hostname not in SKEWER_DEB_HOSTS:
+        response.close()
+        raise ValueError("Skewer release redirected outside the trusted download hosts.")
+    declared = int(response.headers.get("Content-Length", "0") or 0)
+    if declared > SKEWER_DEB_MAX_BYTES:
+        response.close()
+        raise ValueError("Skewer package is unexpectedly large.")
+    package = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    total = 0
+    try:
+        while chunk := response.read(1024 * 1024):
+            total += len(chunk)
+            if total > SKEWER_DEB_MAX_BYTES:
+                raise ValueError("Skewer package is unexpectedly large.")
+            package.write(chunk)
+    except Exception:
+        package.close()
+        raise
+    finally:
+        response.close()
+    package.seek(0)
+    return package, total
 
 
 def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
@@ -307,6 +354,9 @@ class SaslikServer(ThreadingHTTPServer):
         self.skewer_reports: dict[str, dict] = {}
         self.skewer_reports_lock = threading.Lock()
         self.psk_server = None
+        self.tls_context: ssl.SSLContext | None = None
+        self.tls_certificate: Path | None = None
+        self.tls_lock = threading.Lock()
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -337,8 +387,12 @@ class SaslikServer(ThreadingHTTPServer):
 
     def guardian_request(self, action: str, instance: Instance | None = None,
                          **options: object) -> bool:
+        return self.guardian_exchange(action, instance, **options).get("ok") is True
+
+    def guardian_exchange(self, action: str, instance: Instance | None = None,
+                          **options: object) -> dict:
         if not self.guardian_socket.exists():
-            return False
+            return {"ok": False, "error": "Guardian unavailable"}
         target_lab = instance.data_dir if instance else self.runner.lab
         target_name = instance.name if instance else self.runner.instance
         payload = json.dumps({
@@ -352,9 +406,19 @@ class SaslikServer(ThreadingHTTPServer):
                 client.settimeout(60)
                 client.connect(str(self.guardian_socket))
                 client.sendall(payload)
-                return b'"ok":true' in client.recv(4096)
-        except OSError:
-            return False
+                client.shutdown(socket.SHUT_WR)
+                response = bytearray()
+                while len(response) < 65536:
+                    chunk = client.recv(min(4096, 65536 - len(response)))
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\n" in chunk:
+                        break
+                result = json.loads(response)
+                return result if isinstance(result, dict) else {"ok": False}
+        except (OSError, ValueError):
+            return {"ok": False, "error": "Guardian communication failed"}
 
     def guardian_stop(self) -> bool:
         return self.guardian_request("stop")
@@ -391,9 +455,18 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = self.server.runner.snapshot()
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
             return self._json(snapshot)
+        if path == "/api/portal-tls":
+            if self.server.tls_certificate is None:
+                return self._json({"error": "HTTPS certificate is unavailable"},
+                                  HTTPStatus.SERVICE_UNAVAILABLE)
+            return self._json(portal_tls_details(self.server.tls_certificate))
         if path == "/api/skewer":
             self.server.skewer_last_seen = time.monotonic()
             return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
+        if path == "/downloads/skewer-linux-amd64.deb":
+            return self._skewer_download()
+        if path == "/downloads/tuntom-linux-amd64.deb":
+            return self._tuntom_download()
         if path == "/api/skewer/reports":
             with self.server.skewer_reports_lock:
                 reports = [dict(report, online=time.monotonic() - report["seen_monotonic"] < 30)
@@ -429,6 +502,19 @@ class Handler(BaseHTTPRequestHandler):
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
             return self._json({"patches": list_patches(lab)})
+        if path == "/api/dev/query":
+            if not self.server.devel:
+                return self._json({"error": "Dev režim není povolený."},
+                                  HTTPStatus.FORBIDDEN)
+            name = parse_qs(parsed.query).get("name", [""])[0]
+            try:
+                result = run_dev_query(name)
+                return self._json(result, HTTPStatus.OK if result["ok"]
+                                  else HTTPStatus.BAD_GATEWAY)
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except RuntimeError as exc:
+                return self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         if path == "/api/dev/debug":
             if not self.server.devel:
                 return self._json({"error": "Dev režim není povolený."},
@@ -550,6 +636,34 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, RuntimeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
+    def _tuntom_download(self) -> None:
+        # Reserve a same-origin bootstrap URL, including plain HTTP deployments.
+        # No release exists yet: do not invent an upstream URL, fetch arbitrary
+        # client input, or return an error document with a .deb content type.
+        return self._json({"available": False, "code": "package_not_published",
+                           "error": "Tuntom DEB balíček zatím není publikovaný."},
+                          HTTPStatus.NOT_IMPLEMENTED)
+
+    def _skewer_download(self) -> None:
+        try:
+            package, size = fetch_skewer_deb()
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            return self._json({"error": f"Skewer balíček se nepodařilo stáhnout: {exc}"},
+                              HTTPStatus.BAD_GATEWAY)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/vnd.debian.binary-package")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="skewer-linux-amd64.deb"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            shutil.copyfileobj(package, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            package.close()
+
     def _files_upload(self, query: str) -> None:
         try:
             if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
@@ -670,11 +784,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
             return self._json({"error": "Neplatný CSRF token."}, HTTPStatus.FORBIDDEN)
         if path == "/api/skewer/pairing":
-            # The legacy HTTP GUI is not an authenticated remote administration channel.
-            # Never hand out enrollment secrets over that channel to remote clients.
-            host = urlparse("//" + self.headers.get("Host", "")).hostname
-            if not ipaddress.ip_address(self.client_address[0]).is_loopback or host not in {"localhost", "127.0.0.1", "::1"}:
-                return self._json({"error": "Párovací údaje spravuj lokálně nebo přes SSH port-forward."}, HTTPStatus.FORBIDDEN)
             if self.server.psk_server is None:
                 return self._json({"error": "PSK endpoint není dostupný."}, HTTPStatus.SERVICE_UNAVAILABLE)
             try:
@@ -689,7 +798,14 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "rotate":
                     store.rotate()
                 elif action == "revoke":
-                    store.revoke(str(value.get("identity", "")))
+                    identity = str(value.get("identity", ""))
+                    # Serialize against authenticated tunnel-open: once the
+                    # credential disappears no concurrent request can renew it.
+                    with store.lock:
+                        store.revoke(identity)
+                        result = self.server.guardian_exchange("tunnel-revoke", peer=identity)
+                    if not result.get("ok"):
+                        return self._json({"error": "Credential revoked; tunnel cleanup pending lease expiry"}, status=503)
                 elif action not in {"link", "list"}:
                     raise ValueError()
                 if action == "list":
@@ -714,7 +830,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/workspace/action", "/api/workspace/settings",
                         "/api/crashes/clear", "/api/crashes/diagnose",
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
-                        "/api/dev/debug", "/api/dev/gdb/session"}:
+                        "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -726,6 +842,13 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/portal-tls/renew":
+                with self.server.tls_lock:
+                    certificate, key = generate_portal_tls(data_root() / "portal-tls",
+                                                           self.server.server_address[0])
+                    self.server.tls_context.load_cert_chain(certificate, key)
+                    self.server.tls_certificate = certificate
+                return self._json(portal_tls_details(certificate))
             if path == "/api/spider/bootstrap":
                 return self._spider_bootstrap_issue(str(body.get("origin", "")))
             if path == "/api/cli":
@@ -1297,7 +1420,14 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         print("Používej pouze důvěryhodnou laboratorní síť nebo host firewall.")
     active_runner = runner or LabRunner()
     active_runner.devel = devel
+    certificate, key = ensure_portal_tls(data_root() / "portal-tls", host)
     server = SaslikServer((host, port), active_runner, devel=devel)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, key)
+    server.tls_context = context
+    server.tls_certificate = certificate
+    server.socket = context.wrap_socket(server.socket, server_side=True)
     def paired_status():
         server.skewer_last_seen = time.monotonic()
         snapshot = active_runner.snapshot()
@@ -1305,7 +1435,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         detail["end_to_end"] = snapshot.get("health", {}).get("end_to_end", {})
         return {**skewer_discovery(active_runner.instance),
                 **skewer_ca(active_runner.lab, active_runner.instance),
-                "lab_status": detail, "ui_port": server.server_port}
+                "lab_status": detail, "ui_port": server.server_port,
+                "features": tunnel_features()}
     def paired_report(client, payload):
         report = normalize_skewer_report(payload)
         report.update(received_at=time.time(), seen_monotonic=time.monotonic(), client_id=client)
@@ -1318,14 +1449,27 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
             server.skewer_reports[client] = report
         server.skewer_last_seen = time.monotonic()
         return {"ok": True}
+    def paired_tunnel(client, payload, psk):
+        # Only the TLS-PSK dispatcher calls this callback. Do not forward
+        # arbitrary remote fields (paths, addresses or executable arguments).
+        action = payload["action"]
+        options = {"peer": client, "context": payload.get("context", "")}
+        if action == "tunnel-open":
+            options["psk"] = psk.hex()
+        result = server.guardian_exchange(action, **options)
+        if not result.get("ok"):
+            # Privileged stderr may contain implementation details; expose a
+            # stable error, never echo a credential-bearing request.
+            return {"ok": False, "error": "Tunnel operation unavailable"}
+        return result
     server.psk_server = PskServer((host, server.server_port + 1),
         PairingStore(data_root() / "skewer-clients.json"),
-        paired_status, paired_report)
+        paired_status, paired_report, paired_tunnel)
     threading.Thread(target=server.psk_server.serve_forever, daemon=True).start()
     server.start_guardian()
     active_runner.component_action = lambda action, component: server.guardian_request(
         f"component-{action.removesuffix('-component')}", component=component)
-    url = f"http://{host}:{server.server_port}/"
+    url = f"https://{host}:{server.server_port}/"
     print(f"Saslik hoří na {url}")
     if devel:
         print("Dev režim je zapnutý; UI může měnit zdrojové checkouty workspace.")

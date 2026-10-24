@@ -132,7 +132,7 @@ def collect(lab: Path, *, include_lored: bool = False) -> dict[str, object]:
     if include_lored and (lab / "build/lore/lored/lored").is_file():
         checks["lored"] = lambda: _http_check("http://127.0.0.1:8091/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-        checks["pcap_viewer"] = lambda: _http_check("http://127.0.0.1:15174/readyz")
+        checks["pcap_viewer"] = lambda: _http_check("http://127.0.0.1:25174/readyz")
         try:
             storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
                 encoding="ascii").strip()

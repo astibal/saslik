@@ -52,15 +52,15 @@ class RunnerTests(unittest.TestCase):
 
     def test_endpoint_parser(self):
         result = parse_endpoints([
-            "Spider:", "  UI:      http://helmut:15173/", "  Token:   secret",
+            "Spider:", "  UI:      https://helmut:15173/", "  Token:   secret",
             "  HTTP CONNECT: http://10.254.77.2:33128", "  CLI: 10.254.77.2:55000",
-            "  PCAP Viewer: http://127.0.0.1:15174/",
+            "  PCAP Viewer: https://127.0.0.1:15174/",
         ])
-        self.assertEqual("http://helmut:15173/", result["spider_ui"])
-        self.assertEqual("http://helmut:15173/test-ca.pem", result["ca_download"])
+        self.assertEqual("https://helmut:15173/", result["spider_ui"])
+        self.assertEqual("https://helmut:15173/test-ca.pem", result["ca_download"])
         self.assertNotIn("spider_token", result)
         self.assertEqual("http://10.254.77.2:33128", result["proxy"])
-        self.assertEqual("http://127.0.0.1:15174/", result["pcap_viewer"])
+        self.assertEqual("https://127.0.0.1:15174/", result["pcap_viewer"])
 
     def test_nat_is_default_and_does_not_start_pasta(self):
         with tempfile.TemporaryDirectory() as directory:

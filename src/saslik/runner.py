@@ -186,7 +186,7 @@ class LabRunner:
         if action not in {"start", "stop", "reset", "fetch", "status", "update-component"}:
             raise ValueError("Neznámá akce.")
         if action == "update-component" and component not in {
-                "smithproxy", "spider", "sift", "lored", "pcap-viewer"}:
+                "smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}:
             raise ValueError("Neznámá komponenta.")
         branch = validate_ref(branch)
         if template not in {"spider-sift", "spider", "proxy"}:
@@ -268,6 +268,7 @@ class LabRunner:
         routing = sudo + [sys.executable, "-m", "saslik.routing"]
         identity = sudo + [sys.executable, "-m", "saslik.identity"]
         netns_dns = sudo + [sys.executable, "-m", "saslik.netns_dns"]
+        sanity = sudo + [sys.executable, "-m", "saslik.sanity"]
         dns_server = "169.254.1.1" if self.egress == "pasta" else "1.1.1.1"
         component_args = [str(self.lab), "--instance", self.instance,
                           "--expose-address", self.expose_address]
@@ -275,10 +276,11 @@ class LabRunner:
             component_args.append("--devel")
         workspace_devel = ["--devel"] if self.devel else []
         clean_pasta = self.egress == "pasta" or pasta_cleanup_needed(
-            self.lab, self.instance, inspect_unit=False)
+            self.lab, self.instance, inspect_unit=True)
 
         if action == "start":
             commands = [
+                sanity + ["report", str(self.lab)],
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
             ]
@@ -296,6 +298,8 @@ class LabRunner:
                 commands.extend([
                     workspace + ["viewer-sync", str(self.lab)],
                     workspace + ["viewer-install", str(self.lab)],
+                    workspace + ["component-sync", str(self.lab), "--component", "tuntom"],
+                    workspace + ["component-build", str(self.lab), "--component", "tuntom"],
                     *([workspace + ["component-sync", str(self.lab), "--ref", branch,
                                    "--component", "lored", "--devel"],
                        workspace + ["component-build", str(self.lab),
@@ -320,6 +324,7 @@ class LabRunner:
             return commands
         if action == "reset":
             commands = [
+                sanity + ["report", str(self.lab)],
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
             ]

@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.workspace import (
-    _remove_abandoned_index_lock, _run, _sync_checkout, component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
+    _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
+    _worktree_matches_ref,
+    component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
     save_binary_bundle, source_changes,
 )
 
@@ -63,6 +65,35 @@ class WorkspaceTests(unittest.TestCase):
         fetch = run.call_args_list[1].args[0]
         self.assertIn("--no-write-fetch-head", fetch)
         self.assertIn("+master:refs/saslik/source-status/smithproxy", fetch)
+        self.assertEqual("0", run.call_args_list[0].kwargs["env"]["GIT_OPTIONAL_LOCKS"])
+
+    def test_fresh_checkout_clones_requested_ref_without_second_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / "remote.git"
+            source = root / "source"
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+            (source / "value.txt").write_text("main\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "value.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(source), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "main",
+            ], check=True)
+            subprocess.run(["git", "-C", str(source), "branch", "feature"], check=True)
+            subprocess.run(["git", "-C", str(source), "remote", "add", "origin", str(remote)],
+                           check=True)
+            subprocess.run(["git", "-C", str(source), "push", "-q", "origin", "main", "feature"],
+                           check=True)
+
+            _sync_checkout(checkout, str(remote), "feature")
+
+            branch = subprocess.run(
+                ["git", "-C", str(checkout), "branch", "--show-current"], check=True,
+                text=True, stdout=subprocess.PIPE,
+            ).stdout.strip()
+            self.assertEqual("feature", branch)
 
     @patch("saslik.workspace.subprocess.run")
     def test_component_source_status_reports_dirty_and_behind_independently(self, run):
@@ -209,6 +240,61 @@ class WorkspaceTests(unittest.TestCase):
 
             self.assertEqual("my work\n", (checkout / "local.txt").read_text(encoding="utf-8"))
             self.assertEqual("v2\n", (checkout / "remote.txt").read_text(encoding="utf-8"))
+
+    def test_sync_reports_when_dirty_worktree_already_matches_upstream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / "remote.git"
+            upstream = root / "upstream"
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+            tracked = upstream / "tracked.txt"
+            tracked.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(upstream), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(upstream), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "initial",
+            ], check=True)
+            subprocess.run(["git", "-C", str(upstream), "remote", "add", "origin", str(remote)],
+                           check=True)
+            subprocess.run(["git", "-C", str(upstream), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+            subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(checkout)],
+                           check=True)
+
+            tracked.write_text("upstream version\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(upstream), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(upstream), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "upstream update",
+            ], check=True)
+            subprocess.run(["git", "-C", str(upstream), "push", "-q"], check=True)
+            (checkout / "tracked.txt").write_text("upstream version\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "bezpečně zahodit"):
+                _sync_checkout(checkout, str(remote), "main")
+
+            self.assertEqual("upstream version\n",
+                             (checkout / "tracked.txt").read_text(encoding="utf-8"))
+
+    def test_worktree_match_rejects_extra_local_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
+            (checkout / "tracked.txt").write_text("upstream\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(checkout), "add", "tracked.txt"], check=True)
+            subprocess.run([
+                "git", "-C", str(checkout), "-c", "user.name=Saslik test",
+                "-c", "user.email=saslik@example.invalid", "commit", "-qm", "upstream",
+            ], check=True)
+
+            self.assertTrue(_worktree_matches_ref(checkout, "HEAD"))
+            (checkout / "extra.txt").write_text("local only\n", encoding="utf-8")
+            self.assertFalse(_worktree_matches_ref(checkout, "HEAD"))
+            difference = _worktree_diff_ref(checkout, "HEAD")
+            self.assertIn("diff --git a/extra.txt b/extra.txt", difference)
+            self.assertIn("+local only", difference)
 
     def test_binary_bundle_round_trip_and_marker(self):
         with tempfile.TemporaryDirectory() as directory:

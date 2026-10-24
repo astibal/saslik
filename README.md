@@ -17,6 +17,28 @@ up completed captures and listens only on loopback; the browser-facing viewer
 uses its private `0600` token through the shared-filesystem API. Startup and the
 Status tab use each service's `/readyz` contract rather than a shallow HTTP ping.
 
+## Tuntom workspace component
+
+Tuntom is managed in **Workspace options → Components**, independently of the
+Skewer client's local transport installation. Saslik clones `astibal/tuntom`
+into `src/tuntom` (default ref `main`, repository override
+`SASLIK_TUNTOM_REPOSITORY`) and builds the `tuntom` CMake target with the
+workspace's Debug/Release setting. A successful build is atomically published
+as `runtime/tuntom/tuntom`; failed builds leave the last working runtime intact.
+Binary-bundle workspaces also build this separately managed component.
+
+The privileged supervisor uses this workspace runtime, not a system-wide
+`/usr/libexec` path or a path supplied by a remote client. As with the other
+source-built lab components, the local workspace source is trusted code.
+On first use Saslik creates the non-login `tuntom` system account if missing;
+Tuntom starts privileged for network setup and then drops privileges.
+
+There is no idle Tuntom daemon: authenticated clients get individual transient
+systemd endpoints on demand. Updating Tuntom closes existing tunnel leases so
+clients must reconnect, but does not restart Smithproxy or other components.
+Automatic service restart is intentionally not offered: a tunnel restart needs
+a fresh lease and network setup, not just a restarted process.
+
 ## Licensed components
 
 Community components remain independent of licensing. A component that is
@@ -46,9 +68,10 @@ an unlicensed addition reports the missing entitlement without stopping the
 running lab. A configured but broken key or unavailable licensing service is
 reported as a configuration error. License-supplied text is never
 used as a command line: each component adapter must explicitly map an allowed
-key to an option, while unknown keys are ignored. `lored` is the first declared
-component and requires `component.lored`; Smithproxy, Spider, Sift and the PCAP
-Viewer are not gated by this integration.
+key to an option, while unknown keys are ignored. The source-built `lored`
+component is currently a development-only integration and is not gated. A
+future distributed Lored feed or binary may require `component.lored`;
+Smithproxy, Spider, Sift and the PCAP Viewer remain community components.
 
 The issuer's Ed25519 public key can still be entered in workspace settings as a
 development override, similarly to the IPinfo integration. The corresponding

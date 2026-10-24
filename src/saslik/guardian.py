@@ -5,6 +5,7 @@ import json
 import os
 import select
 import socket
+import logging
 import time
 from pathlib import Path
 
@@ -15,9 +16,10 @@ from .pasta import pasta_down
 from .routing import routing_down
 from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
+from .tuntom_supervisor import TunnelSupervisor
 
 
-UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer"}
+UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
 
 
 def cleanup(lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
@@ -48,22 +50,43 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
     listener.setblocking(False)
     root = data_root.resolve()
     last_target: tuple[Path, str, str] | None = (lab.resolve(), instance, expose_address)
+    tunnels = TunnelSupervisor()
+    next_expiration = 0.0
     try:
         while parent_alive(parent_pid):
+            if time.monotonic() >= next_expiration:
+                # Retry failed teardown without starving other clients or
+                # hammering systemd on every iteration.
+                if tunnels.expire():
+                    logging.warning("Tunnel cleanup incomplete; retrying in five seconds")
+                next_expiration = time.monotonic() + 5
             readable, _, _ = select.select([listener], [], [], 0.5)
             if not readable:
                 continue
             connection, _ = listener.accept()
             with connection:
                 try:
-                    payload = json.loads(connection.recv(65536).decode("utf-8"))
+                    connection.settimeout(5)
+                    raw = bytearray()
+                    while len(raw) < 65536:
+                        chunk = connection.recv(min(4096, 65536 - len(raw)))
+                        if not chunk:
+                            break
+                        raw.extend(chunk)
+                    if len(raw) >= 65536:
+                        raise ValueError("Guardian request too large")
+                    payload = json.loads(raw)
                     lab = Path(str(payload["lab"])).resolve()
                     if not lab.is_relative_to(root):
                         raise RuntimeError("Workspace je mimo Saslik data root.")
                     target = (lab, str(payload["instance"]), str(payload["expose_address"]))
                     last_target = target
+                    response = {"ok": True}
                     if payload.get("action") == "stop":
+                        tunnels.close(target)
                         cleanup(*target, devel=devel)
+                    elif payload.get("action") in {"tunnel-open", "tunnel-heartbeat", "tunnel-close", "tunnel-revoke"}:
+                        response = tunnels.request(target, payload)
                     elif payload.get("action") == "diagnose-smithproxy":
                         diagnose_smithproxy(lab, str(payload["instance"]),
                                             int(payload.get("signal", 11)))
@@ -77,16 +100,25 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         if component not in UPDATABLE_COMPONENTS:
                             raise RuntimeError("Komponenta není povolená.")
                         manager = SystemdComponents(*target, devel=devel)
+                        if component == "tuntom":
+                            # Forget old leases as well as stopping their units;
+                            # clients must establish fresh authenticated tunnels.
+                            tunnels.close(target)
                         if payload["action"] == "component-stop":
                             manager.stop_component(component)
                         else:
                             manager.restart_component(component)
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
-                    connection.sendall(b'{"ok":true}\n')
+                    connection.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
                 except Exception as exc:
                     connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")
     finally:
+        try:
+            tunnels.close()
+        except Exception:
+            logging.error("Tunnel cleanup incomplete during guardian shutdown")
+            # Component-slice cleanup below remains the final fallback.
         if last_target is not None:
             try:
                 cleanup(*last_target, devel=devel)

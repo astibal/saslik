@@ -9,11 +9,12 @@ import tempfile
 import threading
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 from saslik.pairing import PairingStore, PskServer
 from saslik.server import skewer_ca
+from saslik.tuntom import TunnelSessions
 
 
 class PairingTests(unittest.TestCase):
@@ -57,6 +58,26 @@ class PairingTests(unittest.TestCase):
             self.enroll(instance=request["instance"])
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
 
+    def test_tunnel_requires_active_authorized_pairing(self):
+        client, _ = self.enroll()
+        identity = client["identity"]
+        callback = Mock(return_value={"ok": True})
+        request = {"action": "tunnel-open"}
+        with self.assertRaises(ValueError):
+            self.store.request(identity, request, lambda: {}, tunnel=callback)
+        callback.assert_not_called()
+        self.store.request(identity, {"action": "commit"}, lambda: {})
+        self.assertEqual({"ok": True}, self.store.request(identity, request, lambda: {}, tunnel=callback))
+        callback.assert_called_once_with(identity, request, self.store.key(identity))
+        callback.reset_mock()
+        self.store.clients[identity]["permissions"] = ["status"]
+        with self.assertRaises(ValueError):
+            self.store.request(identity, request, lambda: {}, tunnel=callback)
+        self.store.revoke(identity)
+        with self.assertRaises(ValueError):
+            self.store.request(identity, request, lambda: {}, tunnel=callback)
+        callback.assert_not_called()
+
     def test_restart_recovers_pending_commit(self):
         client, _ = self.enroll()
         restarted = PairingStore(self.path)
@@ -86,6 +107,26 @@ class PairingTests(unittest.TestCase):
         client, _ = self.enroll()
         self.store.rotate()
         self.assertEqual(b"", self.store.key(client["identity"]))
+
+    @unittest.skipUnless(os.environ.get("SKEWER_TUNTOM_TEST_BINARY"), "Native tunnel client not supplied")
+    def test_native_tunnel_control(self):
+        backend = Mock()
+        sessions = TunnelSessions(backend)
+        server = PskServer(("127.0.0.1", 0), self.store, lambda: {}, tunnel=sessions.request)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        endpoint = f"skewer://127.0.0.1:{server.server_address[1]}/pair"
+        env = dict(os.environ, XDG_DATA_HOME=self.directory.name + "/client-data",
+                   XDG_CONFIG_HOME=self.directory.name + "/client-config")
+        result = subprocess.run([os.environ["SKEWER_TUNTOM_TEST_BINARY"], endpoint],
+            input=self.store.link("127.0.0.1", server.server_address[1]) + "\n",
+            env=env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, backend.start.call_count)
+        self.assertEqual(2, backend.stop.call_count)
+        self.assertFalse(sessions.leases.leases)
 
     @unittest.skipUnless(os.environ.get("SKEWER_TEST_BINARY"), "Native Skewer binary not supplied")
     def test_native_tls_pairing(self):

@@ -128,10 +128,8 @@ def namespace_up() -> None:
         _run(["ip", "-n", NS, "route", "replace", f"{address}/32", "via", HOST_ADDR, "dev", "eth0"])
     _nft(f"""
 table inet {NS_TABLE} {{
-  chain prerouting {{
-    type filter hook prerouting priority mangle; policy accept;
-    meta l4proto tcp socket transparent 1 meta mark set 1 accept
-    iifname != {{ "eth0", "{PROBE_IF}" }} return
+  set tunnel_interfaces {{ type ifname; }}
+  chain proxy_ingress {{
     fib daddr type local return
     fib daddr type broadcast return
     fib daddr type multicast return
@@ -139,6 +137,12 @@ table inet {NS_TABLE} {{
     udp dport 443 counter tproxy to :443 meta mark set 1 accept
     meta l4proto tcp counter tproxy to :50080 meta mark set 1 accept
     meta l4proto udp counter tproxy to :50080 meta mark set 1 accept
+  }}
+  chain prerouting {{
+    type filter hook prerouting priority mangle; policy accept;
+    meta l4proto tcp socket transparent 1 meta mark set 1 accept
+    iifname {{ "eth0", "{PROBE_IF}" }} jump proxy_ingress
+    iifname @tunnel_interfaces jump proxy_ingress
   }}
 }}
 """, namespace=True)

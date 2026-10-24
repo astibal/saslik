@@ -71,7 +71,7 @@ class PairingStore:
             value = self.clients.get(identity)
             return bytes.fromhex(value["key"]) if value else b""
 
-    def request(self, identity: str, request: dict, status, report=None):
+    def request(self, identity: str, request: dict, status, report=None, tunnel=None):
         with self.lock:
             action = request.get("action")
             if identity == self.invitation and action == "enroll":
@@ -87,7 +87,7 @@ class PairingStore:
                     raise ValueError("Instance already registered; revoke its old pairing first")
                 client = "client-" + secrets.token_hex(16)
                 key = secrets.token_bytes(32)
-                value = {"instance": instance, "key": key.hex(), "state": "pending", "permissions": ["status"]}
+                value = {"instance": instance, "key": key.hex(), "state": "pending", "permissions": ["status", "tunnel"]}
                 self._save({**self.clients, client: value})
                 self.reservation = (client, nonce)
                 return {"identity": client, "psk": encode(key)}
@@ -104,6 +104,9 @@ class PairingStore:
                 return status()
             if value["state"] == "active" and action == "report" and "status" in value["permissions"] and report:
                 return report(identity, request.get("report"))
+            if (value["state"] == "active" and "tunnel" in value["permissions"] and tunnel
+                    and action in {"tunnel-open", "tunnel-heartbeat", "tunnel-close"}):
+                return tunnel(identity, request, bytes.fromhex(value["key"]))
             raise ValueError("Operation not permitted")
 
     def revoke(self, identity):
@@ -119,11 +122,12 @@ class PskServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = False
 
-    def __init__(self, address, store: PairingStore, status, report=None):
+    def __init__(self, address, store: PairingStore, status, report=None, tunnel=None):
         if not hasattr(ssl.SSLContext, "set_psk_server_callback"):
             raise RuntimeError("Skewer PSK requires Python 3.13+ with OpenSSL PSK support")
         self.store, self.status = store, status
         self.report = report
+        self.tunnel = tunnel
         self.slots = threading.BoundedSemaphore(16)
         store.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.store_lock = os.open(str(store.path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -195,7 +199,7 @@ class PskHandler(socketserver.BaseRequestHandler):
                     request = json.loads(raw)
                     if not isinstance(request, dict):
                         raise ValueError("Expected an object")
-                    response = self.server.store.request(identity, request, self.server.status, self.server.report)
+                    response = self.server.store.request(identity, request, self.server.status, self.server.report, self.server.tunnel)
                 except (ValueError, KeyError, TypeError):
                     response = {"error": "Request rejected"}
                 connection.sendall(json.dumps(response).encode() + b"\n")

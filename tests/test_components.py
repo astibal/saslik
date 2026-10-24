@@ -25,7 +25,10 @@ class ComponentTests(unittest.TestCase):
             frontend = next(c for c in manager.components() if c.name == "frontend")
             self.assertEqual(frontend.command[1], str(server))
             self.assertEqual(frontend.command[2:], (
-                "15173", "--bind", "0.0.0.0", "--directory", str(lab / "state/frontend")))
+                "25173", "--bind", "127.0.0.1", "--directory", str(lab / "state/frontend")))
+            relay = next(c for c in manager.components() if c.name == "frontend-tls")
+            self.assertIn("OPENSSL-LISTEN:15173", relay.command[1])
+            self.assertEqual("TCP4:127.0.0.1:25173", relay.command[2])
 
     def test_unit_names_are_instance_scoped(self):
         self.assertEqual("saslik-lab-1-smithproxy.service",
@@ -35,7 +38,9 @@ class ComponentTests(unittest.TestCase):
     def test_down_stops_whole_slice(self, run):
         with tempfile.TemporaryDirectory() as directory:
             manager = SystemdComponents(Path(directory), "lab1")
-            manager.down()
+            # The slice test must never inspect or signal real host processes.
+            with patch.object(manager, "_stop_stale_forwarders"):
+                manager.down()
         first = run.call_args_list[0].args[0]
         self.assertEqual(["systemctl", "stop", "saslik-lab1.slice"], first)
 
@@ -46,12 +51,26 @@ class ComponentTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any("saslik-lab1-spider.service" in command for command in commands))
         self.assertTrue(any("saslik-lab1-frontend.service" in command for command in commands))
+        self.assertTrue(any("saslik-lab1-frontend-tls.service" in command for command in commands))
         self.assertFalse(any("smithproxy" in " ".join(command) for command in commands))
 
     def test_runtime_has_no_profile_dimension(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = SystemdComponents(Path(directory), "lab1")
         self.assertFalse(hasattr(manager, "profile"))
+
+    def test_stale_forwarder_match_is_specific_to_saslik_topology(self):
+        match = SystemdComponents._saslik_forwarder_command
+        self.assertTrue(match(
+            "socat TCP4-LISTEN:55000,bind=0.0.0.0,reuseaddr,fork "
+            "TCP4:10.254.77.2:55000"
+        ))
+        self.assertTrue(match(
+            "socat OPENSSL-LISTEN:15174,bind=0.0.0.0,reuseaddr,fork "
+            "TCP4:127.0.0.1:25174"
+        ))
+        self.assertFalse(match("socat TCP4-LISTEN:55000 TCP4:192.0.2.8:55000"))
+        self.assertFalse(match("python -m http.server 55000"))
 
     def test_smithproxy_restarts_after_unexpected_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -122,7 +141,10 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--theme-fixed", component.command)
         self.assertEqual("saslik", component.command[
             component.command.index("--theme-fixed") + 1])
-        self.assertIn("15174", component.command)
+        self.assertIn("25174", component.command)
+        relay = next(item for item in components if item.name == "pcap-viewer-tls")
+        self.assertIn("OPENSSL-LISTEN:15174", relay.command[1])
+        self.assertEqual("TCP4:127.0.0.1:25174", relay.command[2])
         self.assertIn("--no-browser", component.command)
         self.assertIn(str(state), storage.command)
         self.assertIn("--watch-root", storage.command)
@@ -177,7 +199,7 @@ class ComponentTests(unittest.TestCase):
         self.assertIn(str(pack), component.command)
         self.assertIn('"format":"lore-pack/2"', pack_text)
         self.assertTrue(component.restart_on_failure)
-        self.assertEqual("component.lored", component.required_feature)
+        self.assertIsNone(component.required_feature)
 
     @patch("saslik.components._run")
     @patch("saslik.components.license_grant", return_value={"workers": "4", "ignored": "x"})

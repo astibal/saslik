@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
                            app_launch_command, normalize_skewer_report,
-                           open_frontend, skewer_discovery)
+                           fetch_skewer_deb, open_frontend, skewer_discovery)
 
 
 class DummySocket:
@@ -79,6 +79,38 @@ class SkewerDiscoveryTests(unittest.TestCase):
             value = skewer_discovery("lab1", Path(directory))
         self.assertFalse(value["available"])
         self.assertEqual("", value["generation"])
+
+    @patch("saslik.server.urlopen")
+    def test_package_proxy_accepts_the_fixed_github_release_asset(self, urlopen):
+        response = MagicMock()
+        response.geturl.return_value = (
+            "https://release-assets.githubusercontent.com/github-production-release-asset/file.deb")
+        response.headers = {"Content-Length": "7"}
+        response.read.side_effect = [b"package", b""]
+        urlopen.return_value = response
+
+        package, size = fetch_skewer_deb()
+        try:
+            self.assertEqual(7, size)
+            self.assertEqual(b"package", package.read())
+        finally:
+            package.close()
+
+        requested = urlopen.call_args.args[0]
+        self.assertEqual(
+            "https://github.com/astibal/saslik-skewer/releases/latest/download/"
+            "skewer-linux-amd64.deb", requested)
+
+    @patch("saslik.server.urlopen")
+    def test_package_proxy_rejects_redirects_outside_github(self, urlopen):
+        response = MagicMock()
+        response.geturl.return_value = "https://example.net/skewer.deb"
+        response.headers = {}
+        urlopen.return_value = response
+
+        with self.assertRaises(ValueError):
+            fetch_skewer_deb()
+        response.close.assert_called_once()
 
     def test_report_is_bounded_and_normalized(self):
         value = normalize_skewer_report({

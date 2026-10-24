@@ -17,6 +17,7 @@ from .settings import setting_value
 
 
 REPOSITORIES = {
+    "tuntom": "git@github.com:astibal/tuntom.git",
     "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
     "sift": "https://github.com/astibal/sift.git",
     "smithproxy": "https://github.com/astibal/smithproxy.git",
@@ -25,6 +26,7 @@ REPOSITORIES = {
 }
 
 COMPONENT_SOURCES = {
+    "tuntom": ("tuntom", "ref_tuntom"),
     "smithproxy": ("smithproxy", "ref_smithproxy"),
     "spider": ("smithproxy-spider", "ref_spider"),
     "sift": ("sift", "ref_sift"),
@@ -45,13 +47,16 @@ def component_source_status(lab: Path, component: str) -> dict[str, object]:
     path = lab.resolve() / "src" / checkout
     if not (path / ".git").exists():
         return {"state": "missing", "detail": "zdroj ještě není stažený"}
+    read_environment = os.environ.copy()
+    read_environment["GIT_OPTIONAL_LOCKS"] = "0"
     dirty = bool(subprocess.run(
         ["git", "-C", str(path), "status", "--porcelain"],
         check=True, text=True, stdout=subprocess.PIPE, timeout=5,
+        env=read_environment,
     ).stdout.strip())
     ref = str(setting_value(lab, ref_setting))
     tracking = f"refs/saslik/source-status/{component}"
-    environment = os.environ.copy()
+    environment = read_environment.copy()
     environment.setdefault("GIT_TERMINAL_PROMPT", "0")
     environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
     try:
@@ -110,6 +115,7 @@ def source_changes(lab: Path) -> list[str]:
         status = subprocess.run(
             ["git", "-C", str(path), "status", "--porcelain"],
             check=True, text=True, stdout=subprocess.PIPE,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         ).stdout.strip()
         if status:
             changed.append(name)
@@ -138,6 +144,41 @@ def discard_source_changes(lab: Path, component: str | None = None) -> list[str]
         _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive",
               "--force"])
     return changed
+
+
+def _worktree_diff_ref(path: Path, ref: str) -> str:
+    """Return the worktree diff from *ref*, including untracked files.
+
+    A temporary index lets Git compare the fetched tree with both tracked and
+    currently untracked files without modifying the checkout's real index.
+    """
+    with tempfile.TemporaryDirectory(prefix="saslik-git-index-") as directory:
+        environment = {
+            **os.environ,
+            "GIT_INDEX_FILE": str(Path(directory) / "index"),
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+        subprocess.run(
+            ["git", "-C", str(path), "read-tree", ref],
+            check=True, env=environment, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "add", "-A", "--"],
+            check=True, env=environment, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        return subprocess.run(
+            ["git", "-C", str(path), "diff", "--cached", "--no-ext-diff",
+             "--no-color", ref, "--"],
+            check=True, text=True, env=environment, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+
+
+def _worktree_matches_ref(path: Path, ref: str) -> bool:
+    """Return whether all non-ignored worktree content matches *ref* exactly."""
+    return not _worktree_diff_ref(path, ref)
 
 
 def _git_directory(checkout: Path) -> Path | None:
@@ -216,12 +257,18 @@ def _sync_checkout(path: Path, repository: str, ref: str,
                    preserve_dirty: bool = False) -> None:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "clone", "--recurse-submodules", repository, str(path)])
+        # Clone the requested ref directly. Apart from avoiding redundant work,
+        # this removes the first-checkout window in which UI status probes used
+        # to race the immediately following `checkout -B`.
+        _run(["git", "clone", "--branch", ref, "--recurse-submodules",
+              repository, str(path)])
+        return
     if not (path / ".git").is_dir():
         raise RuntimeError(f"Saslik odmítá přepsat cizí adresář {path}.")
     changed = subprocess.run(
         ["git", "-C", str(path), "status", "--porcelain"],
         check=True, text=True, stdout=subprocess.PIPE,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     ).stdout.strip()
     if changed:
         branch = subprocess.run(
@@ -240,9 +287,26 @@ def _sync_checkout(path: Path, repository: str, ref: str,
         try:
             _run(["git", "-C", str(path), "merge", "--ff-only", "FETCH_HEAD"])
         except subprocess.CalledProcessError as exc:
+            worktree_diff = ""
+            try:
+                worktree_diff = _worktree_diff_ref(path, "FETCH_HEAD")
+            except (OSError, subprocess.SubprocessError):
+                pass
+            hint = ""
+            if worktree_diff:
+                print(
+                    f"Takto se tvůj lokální source v {path} liší od origin/{ref}:\n"
+                    f"{worktree_diff}",
+                    file=sys.stderr,
+                )
+            else:
+                hint = (
+                    f" Lokální pracovní strom už přesně obsahuje kód z origin/{ref}; "
+                    "lokální změny lze bezpečně zahodit a aktualizaci zopakovat."
+                )
             raise RuntimeError(
                 f"Lokální změny v {path} nelze čistě spojit s origin/{ref}; "
-                "pracovní strom zůstal zachovaný."
+                f"pracovní strom zůstal zachovaný.{hint}"
             ) from exc
         _run(["git", "-C", str(path), "submodule", "update", "--init", "--recursive"])
         message = "Zachovávám přenesené" if preserve_dirty else "Zachovávám"
@@ -269,6 +333,7 @@ def _ensure_checkout(path: Path, repository: str) -> None:
 def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
+    sync_component(lab, "tuntom")
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
@@ -306,6 +371,7 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
     values = {
+        "tuntom": ("tuntom", "SASLIK_TUNTOM_REPOSITORY", str(setting_value(lab, "ref_tuntom"))),
         "smithproxy": ("smithproxy", "SASLIK_SMITHPROXY_REPOSITORY", smithproxy_ref),
         "spider": ("smithproxy-spider", "SASLIK_SPIDER_REPOSITORY",
                    str(setting_value(lab, "ref_spider"))),
@@ -360,6 +426,7 @@ def build(lab: Path, *, devel: bool = False) -> None:
     jobs = f"-j{os.cpu_count() or 1}"
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
     projects = [
+        (lab / "src/tuntom", lab / "build/tuntom", ["-DBUILD_TESTING=OFF"], "tuntom"),
         (lab / "src/smithproxy", lab / "build/smithproxy", ["-DBUILD_TESTING=OFF"], "smithproxy"),
         (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
         (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
@@ -374,7 +441,28 @@ def build(lab: Path, *, devel: bool = False) -> None:
         if target:
             command.extend(["--target", target])
         _run(command)
+        if target == "tuntom":
+            _publish_tuntom(lab)
     install_viewer(lab)
+
+
+def _publish_tuntom(lab: Path) -> None:
+    """Publish only complete builds; existing tunnel processes keep their inode."""
+    source = lab / "build/tuntom/tuntom"
+    if not source.is_file() or not os.access(source, os.X_OK):
+        raise RuntimeError("Tuntom build nevytvořil spustitelnou binárku.")
+    destination = lab / "runtime/tuntom"
+    destination.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".tuntom-", dir=destination)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o755)
+        os.replace(temporary, destination / "tuntom")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
@@ -383,6 +471,7 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
         install_viewer(lab)
         return
     projects = {
+        "tuntom": (lab / "src/tuntom", lab / "build/tuntom", ["-DBUILD_TESTING=OFF"], "tuntom"),
         "smithproxy": (lab / "src/smithproxy", lab / "build/smithproxy",
                        ["-DBUILD_TESTING=OFF"], "smithproxy"),
         "spider": (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
@@ -401,6 +490,8 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
     if target:
         command.extend(["--target", target])
     _run(command)
+    if component == "tuntom":
+        _publish_tuntom(lab)
 
 
 def save_binary_bundle(lab: Path, destination: Path) -> None:
@@ -630,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ca-cert", type=Path)
     parser.add_argument("--ca-key", type=Path)
     parser.add_argument("--bundle", type=Path)
-    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer"))
+    parser.add_argument("--component", choices=tuple(COMPONENT_SOURCES))
     parser.add_argument("--devel", action="store_true")
     args = parser.parse_args(argv)
     try:
