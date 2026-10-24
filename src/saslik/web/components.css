@@ -81,7 +81,7 @@
     border-radius: 6px;
     background: #20262b;
     color: #d8dad7;
-    font: 8px system-ui, sans-serif;
+    font: 9px system-ui, sans-serif;
 }
 
 .component-actions button:not(:disabled):hover {
@@ -92,7 +92,7 @@
 .component-actions .component-drop:not(:disabled):hover { opacity:1;background:#2b1719;border-color:#8f3c4f;color:#ff7895; }
 
 .component-row > strong { display: grid; gap: 3px; }
-.component-row > strong > [data-source-status] { width:max-content;max-width:100%;padding:0;border:0;background:none;color:var(--muted);font:7px system-ui,sans-serif;text-align:left;cursor:pointer; }
+.component-row > strong > [data-source-status] { width:max-content;max-width:100%;padding:0;border:0;background:none;color:var(--muted);font:8px system-ui,sans-serif;text-align:left;cursor:pointer; }
 .component-row > strong > [data-source-status]::before { content: "●"; margin-right: 5px; }
 .component-row > strong > [data-source-status]:not(:disabled):hover { text-decoration:underline; }
 .component-row > strong > [data-source-status].state-current { color: var(--green); }
@@ -235,6 +235,8 @@
 .host-report-details[open] .host-report-meta em { transform:rotate(90deg); }
 .host-report-details-meta { display:flex; align-items:center; gap:18px; padding:8px 12px; border-top:1px solid var(--line); background:#0e1215; color:var(--muted); font:10px system-ui,sans-serif; }
 .host-report-details-meta b { color:#c2c9ce; font-weight:500; }
+.tunnel-state.active { color:var(--green); }
+.tunnel-state.inactive { color:var(--muted); }
 .host-report-table-wrap { max-height:430px; overflow:auto; border-top:1px solid var(--line); }
 .host-report-table { width:100%; border-collapse:collapse; font:11px system-ui,sans-serif; }
 .host-report-table th { position:sticky; top:0; z-index:1; padding:8px 10px; background:#181d21; color:#8e989f; text-align:left; }

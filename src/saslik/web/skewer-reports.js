@@ -77,6 +77,9 @@ async function refreshSkewerReports() {
         }
         const updated = report.received_at
             ? new Date(report.received_at * 1000).toLocaleString() : '—';
+        const sourceIp = report.source_ip || '—';
+        const tunnelLabel = report.tunnel_active ? 'tunel aktivní' : 'tunel neaktivní';
+        const tunnelClass = report.tunnel_active ? 'active' : 'inactive';
         const groupState = group => {
             const active = group.stores.filter(store => store.snap_lifecycle !== 'retained');
             const trusted = active.filter(store => store.installed).length;
@@ -123,7 +126,7 @@ async function refreshSkewerReports() {
         const wasOpen = document.querySelector('.host-report-details')?.open;
         const showUnconfigured = localStorage.getItem('saslik-show-unconfigured-apps') === '1';
         $('skewer-trust-content').innerHTML =
-            `<details class="host-report-details" ${wasOpen ? 'open' : ''}><summary class="host-report-meta"><span><i class="${report.online ? 'online' : 'offline'}"></i><b>${esc(report.hostname)}</b><small>${report.online ? 'online' : 'offline'}</small></span><span class="host-report-more">details <em>›</em></span></summary><div class="host-report-details-meta"><span>Skewer <b>${esc(report.skewer_version || '—')}</b></span><span>poslední report <b>${esc(updated)}</b></span></div><div class="host-report-table-wrap"><table class="host-report-table"><thead><tr><th>Store / profil</th><th>Typ</th><th>Snap revize</th><th>CA stav</th><th>Přesné umístění</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Skewer zatím nereportoval žádné CA stores.</td></tr>'}</tbody></table></div></details><div class="ca-app-toolbar"><label><input type="checkbox" data-show-unconfigured ${showUnconfigured ? 'checked' : ''}> Show unconfigured apps</label><small>0/N bez instalované CA</small></div><div class="ca-app-strip ${showUnconfigured ? '' : 'hide-unconfigured'}">${compact}</div>`;
+            `<details class="host-report-details" ${wasOpen ? 'open' : ''}><summary class="host-report-meta"><span><i class="${report.online ? 'online' : 'offline'}"></i><b>${esc(report.hostname)}</b><small>${report.online ? 'online' : 'offline'} · ${esc(sourceIp)}</small><small class="tunnel-state ${tunnelClass}">${tunnelLabel}</small></span><span class="host-report-more">details <em>›</em></span></summary><div class="host-report-details-meta"><span>Skewer <b>${esc(report.skewer_version || '—')}</b></span><span>zdrojová IP <b>${esc(sourceIp)}</b></span><span>tunel <b class="tunnel-state ${tunnelClass}">${report.tunnel_active ? 'aktivní' : 'neaktivní'}</b></span><span>poslední report <b>${esc(updated)}</b></span></div><div class="host-report-table-wrap"><table class="host-report-table"><thead><tr><th>Store / profil</th><th>Typ</th><th>Snap revize</th><th>CA stav</th><th>Přesné umístění</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Skewer zatím nereportoval žádné CA stores.</td></tr>'}</tbody></table></div></details><div class="ca-app-toolbar"><label><input type="checkbox" data-show-unconfigured ${showUnconfigured ? 'checked' : ''}> Show unconfigured apps</label><small>0/N bez instalované CA</small></div><div class="ca-app-strip ${showUnconfigured ? '' : 'hide-unconfigured'}">${compact}</div>`;
         const visibilityToggle = $('skewer-trust-content').querySelector('[data-show-unconfigured]');
         visibilityToggle.onchange = () => {
             localStorage.setItem('saslik-show-unconfigured-apps', visibilityToggle.checked ? '1' : '0');

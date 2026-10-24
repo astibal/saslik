@@ -17,6 +17,7 @@ from .routing import routing_down
 from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
 from .tuntom_supervisor import TunnelSupervisor
+from .maintenance import maintain_component_logs, repair_log_ownership
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
@@ -108,10 +109,17 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                             manager.stop_component(component)
                         else:
                             manager.restart_component(component)
+                    elif payload.get("action") == "maintenance":
+                        repair_log_ownership(root, owner_uid)
+                        maintain_component_logs(root)
+                        repair_log_ownership(root, owner_uid)
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
                     connection.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
                 except Exception as exc:
+                    # Exception messages may contain command arguments. Log only
+                    # the type; endpoint phase diagnostics locate the failing step.
+                    logging.error("Guardian request failed (%s)", type(exc).__name__)
                     connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")
     finally:
         try:

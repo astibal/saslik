@@ -58,6 +58,19 @@ class PairingTests(unittest.TestCase):
             self.enroll(instance=request["instance"])
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
 
+    def test_psk_runtime_tracks_source_and_tunnel_lease(self):
+        server = PskServer.__new__(PskServer)
+        server.client_activity = {}
+        server.client_activity_lock = threading.Lock()
+        identity = "client-" + "2" * 32
+
+        server.observe_client(identity, "192.0.2.15", "tunnel-open",
+                              {"ok": True, "lease_seconds": 60})
+        self.assertEqual({"source_ip": "192.0.2.15", "tunnel_active": True},
+                         server.client_runtime(identity))
+        server.observe_client(identity, "192.0.2.15", "tunnel-close", {"ok": True})
+        self.assertFalse(server.client_runtime(identity)["tunnel_active"])
+
     def test_tunnel_requires_active_authorized_pairing(self):
         client, _ = self.enroll()
         identity = client["identity"]
@@ -85,6 +98,24 @@ class PairingTests(unittest.TestCase):
         self.assertEqual({"paired": True}, restarted.request(client["identity"], {"action": "commit"}, lambda: {}))
         restarted.revoke(client["identity"])
         self.assertEqual(b"", restarted.key(client["identity"]))
+
+    def test_legacy_active_pairing_gains_tunnel_permission(self):
+        identity = "client-" + "1" * 32
+        legacy = {
+            identity: {
+                "instance": str(uuid.uuid4()),
+                "key": bytes(32).hex(),
+                "state": "active",
+                "permissions": ["status"],
+            }
+        }
+        self.path.write_text(json.dumps(legacy))
+
+        migrated = PairingStore(self.path)
+
+        self.assertEqual(["status", "tunnel"], migrated.clients[identity]["permissions"])
+        stored = json.loads(self.path.read_text())
+        self.assertEqual(["status", "tunnel"], stored[identity]["permissions"])
 
     def test_only_one_reservation(self):
         def attempt(_):

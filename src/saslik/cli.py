@@ -7,7 +7,8 @@ import subprocess
 import threading
 
 from .instance import Instance, remember_instance, remembered_instance
-from .runner import LabRunner, ensure_friendly_data_link
+from .maintenance import LogMaintenance, process_log
+from .runner import LabRunner, data_root, ensure_friendly_data_link
 from .server import serve
 
 
@@ -89,6 +90,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    root = data_root()
+    with process_log(root):
+        return _main(argv, root)
+
+
+def _main(argv: list[str] | None, root) -> int:
     args = parser().parse_args(argv)
     override = "pasta" if args.pasta else args.egress
     instance = Instance.load(args.instance or remembered_instance(), override)
@@ -106,10 +113,17 @@ def main(argv: list[str] | None = None) -> int:
     runner.lab = instance.data_dir
     lease = acquire_privileges()
     try:
-        if args.command in {None, "web"}:
-            serve(web_host, getattr(args, "port", 8765),
-                  getattr(args, "display_mode", "app"), runner, devel=args.devel)
-            return 0
-        return runner.run_console(args.command, getattr(args, "branch", "master"))
+        # The web guardian repairs legacy root-owned logs before the first
+        # periodic unprivileged pass. Console commands are normally shorter
+        # than the maintenance interval and must not emit a spurious warning.
+        maintenance = LogMaintenance(root).start(run_immediately=False)
+        try:
+            if args.command in {None, "web"}:
+                serve(web_host, getattr(args, "port", 8765),
+                      getattr(args, "display_mode", "app"), runner, devel=args.devel)
+                return 0
+            return runner.run_console(args.command, getattr(args, "branch", "master"))
+        finally:
+            maintenance.close()
     finally:
         lease.close()

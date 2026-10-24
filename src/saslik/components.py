@@ -421,6 +421,12 @@ class SystemdComponents:
                          runtime_command: tuple[str, ...] | None = None) -> None:
         if runtime_command is None:
             runtime_command = self._licensed_command(component)
+        component.log.parent.mkdir(parents=True, exist_ok=True)
+        component.log.touch(exist_ok=True)
+        if os.geteuid() == 0:
+            owner = self.lab.stat()
+            os.chown(component.log, owner.st_uid, owner.st_gid)
+        component.log.chmod(0o640)
         unit = unit_name(self.instance, component.name)
         _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
         command = [

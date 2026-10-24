@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import time
+import sys
 from pathlib import Path
 
 from .components import Component, NAMESPACE, SystemdComponents, unit_name
@@ -20,8 +21,10 @@ from . import licensing
 
 
 class SystemdTunnelEndpoint:
-    def __init__(self, manager: SystemdComponents, binary: Path, *, runtime=Path("/run")):
+    def __init__(self, manager: SystemdComponents, binary: Path, *, runtime=Path("/run"),
+                 netns_root=Path("/run/netns")):
         self.manager, self.binary, self.runtime = manager, binary, runtime
+        self.netns_root = netns_root
         self.endpoints: dict[int, Path] = {}
 
     @staticmethod
@@ -45,9 +48,12 @@ class SystemdTunnelEndpoint:
                     raise ValueError("Tunnel subnet overlaps an existing route")
 
     def start(self, lease: TunnelLease, key: bytes) -> None:
+        print("[tuntom] Endpoint: checking entitlement and executable", file=sys.stderr, flush=True)
         licensing.require_tuntom()
         if os.geteuid() != 0:
             raise PermissionError("Tunnel endpoints require the privileged supervisor")
+        if not (self.netns_root / NAMESPACE).exists():
+            raise RuntimeError("Lab network namespace is not running")
         if not 1 <= lease.slot <= 255 or len(key) != 16:
             raise ValueError("Invalid endpoint")
         if lease.slot in self.endpoints:
@@ -55,6 +61,7 @@ class SystemdTunnelEndpoint:
         if not self.binary.is_file() or not os.access(self.binary, os.X_OK):
             raise ValueError("Tuntom executable is unavailable; update the Tuntom workspace component")
         self.manager.prepare_tuntom()
+        print("[tuntom] Endpoint: checking subnet conflicts", file=sys.stderr, flush=True)
         self._check_routes(lease)
         directory = Path(tempfile.mkdtemp(prefix="saslik-tuntom-", dir=self.runtime))
         self.endpoints[lease.slot] = directory
@@ -71,6 +78,7 @@ class SystemdTunnelEndpoint:
             environment_files=(secret,),
         )
         try:
+            print(f"[tuntom] Endpoint {lease.slot}: starting systemd unit", file=sys.stderr, flush=True)
             # Keep the UDP socket on the host; only the TUN lives in the lab.
             # The secret is not placed in argv or systemd-run's --setenv flags.
             self.manager._start_component(component)
@@ -86,6 +94,7 @@ class SystemdTunnelEndpoint:
             self.run(["ip", "-n", NAMESPACE, "address", "add", endpoint["server_address"],
                       "dev", endpoint["server_interface"]])
             self._membership(lease, "add")
+            print(f"[tuntom] Endpoint {lease.slot}: ready", file=sys.stderr, flush=True)
         except BaseException:
             self.stop(lease)
             raise

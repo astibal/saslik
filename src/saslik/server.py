@@ -51,6 +51,65 @@ from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
 from .portal_tls import generate as generate_portal_tls
+from .maintenance import LOG_BACKUPS, PROCESS_LOG_LIMIT, RotatingLog, save_logpack
+
+
+SASLIK_LOG_TAIL_BYTES = 256 * 1024
+WEB_LOG_SOURCES = {
+    "smithproxy": "smithproxy.log",
+    "spider": "spider.log",
+    "spider-frontend": "frontend.log",
+    "sift": "sift.log",
+    "pcap-storage": "pcap-storage.log",
+    "pcap-viewer": "pcap-viewer.log",
+    "lored": "lored.log",
+    "e2e-probe": "e2e-probe.log",
+}
+
+
+def log_tail(path: Path, limit: int = SASLIK_LOG_TAIL_BYTES) -> dict:
+    """Return a bounded UTF-8 tail suitable for the live web log viewer."""
+    try:
+        stat = path.stat()
+        with path.open("rb") as source:
+            if stat.st_size > limit:
+                source.seek(stat.st_size - limit)
+                source.readline()  # Drop the first, potentially partial line.
+            data = source.read(limit)
+    except FileNotFoundError:
+        return {"data": "", "revision": "missing", "truncated": False}
+    return {
+        "data": data.decode("utf-8", "replace"),
+        "revision": f"{stat.st_mtime_ns}:{stat.st_size}",
+        "truncated": stat.st_size > limit,
+    }
+
+
+def web_log_tail(root: Path, lab: Path, source: str) -> dict:
+    """Resolve only named Saslik log sources; never accept browser paths."""
+    if source == "saslik":
+        return log_tail(root / "saslik.log")
+    if source == "skewer-api":
+        return log_tail(root / "skewer-api.log")
+    if source == "tuntom":
+        paths = sorted((lab / "state").glob("tuntom-*.log"))
+        if not paths:
+            return {"data": "", "revision": "missing", "truncated": False}
+        per_file = max(4096, SASLIK_LOG_TAIL_BYTES // len(paths))
+        parts = []
+        revisions = []
+        truncated = False
+        for path in paths:
+            value = log_tail(path, per_file)
+            parts.append(f"=== {path.name} ===\n{value['data']}")
+            revisions.append(f"{path.name}:{value['revision']}")
+            truncated = truncated or value["truncated"]
+        return {"data": "\n".join(parts), "revision": "|".join(revisions),
+                "truncated": truncated}
+    filename = WEB_LOG_SOURCES.get(source)
+    if filename is None:
+        raise ValueError("Neznámý zdroj logu.")
+    return log_tail(lab / "state" / filename)
 
 
 APP_BROWSERS = (
@@ -62,6 +121,10 @@ SKEWER_DEB_URL = (
     "https://github.com/astibal/saslik-skewer/releases/latest/download/"
     "skewer-linux-amd64.deb"
 )
+TUNTOM_DEB_URLS = {
+    "amd64": "https://github.com/astibal/tuntom/releases/latest/download/tuntom_amd64.deb",
+    "arm64": "https://github.com/astibal/tuntom/releases/latest/download/tuntom_arm64.deb",
+}
 SKEWER_DEB_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
@@ -70,24 +133,24 @@ SKEWER_DEB_HOSTS = {
 SKEWER_DEB_MAX_BYTES = 256 * 1024 * 1024
 
 
-def fetch_skewer_deb():
-    """Fetch the fixed Skewer bootstrap package without becoming an open proxy."""
-    response = urlopen(SKEWER_DEB_URL, timeout=30)
+def _fetch_github_deb(url: str, label: str):
+    """Fetch one fixed release package without becoming an open proxy."""
+    response = urlopen(url, timeout=30)
     final_url = urlparse(response.geturl())
     if final_url.scheme != "https" or final_url.hostname not in SKEWER_DEB_HOSTS:
         response.close()
-        raise ValueError("Skewer release redirected outside the trusted download hosts.")
+        raise ValueError(f"{label} release redirected outside the trusted download hosts.")
     declared = int(response.headers.get("Content-Length", "0") or 0)
     if declared > SKEWER_DEB_MAX_BYTES:
         response.close()
-        raise ValueError("Skewer package is unexpectedly large.")
+        raise ValueError(f"{label} package is unexpectedly large.")
     package = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
     total = 0
     try:
         while chunk := response.read(1024 * 1024):
             total += len(chunk)
             if total > SKEWER_DEB_MAX_BYTES:
-                raise ValueError("Skewer package is unexpectedly large.")
+                raise ValueError(f"{label} package is unexpectedly large.")
             package.write(chunk)
     except Exception:
         package.close()
@@ -96,6 +159,18 @@ def fetch_skewer_deb():
         response.close()
     package.seek(0)
     return package, total
+
+
+def fetch_skewer_deb():
+    return _fetch_github_deb(SKEWER_DEB_URL, "Skewer")
+
+
+def fetch_tuntom_deb(architecture: str):
+    try:
+        url = TUNTOM_DEB_URLS[architecture]
+    except KeyError as exc:
+        raise ValueError("Unsupported Tuntom package architecture.") from exc
+    return _fetch_github_deb(url, "Tuntom")
 
 
 def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
@@ -341,7 +416,8 @@ def app_launch_command(url: str) -> str:
 
 
 class SaslikServer(ThreadingHTTPServer):
-    def __init__(self, address, runner: LabRunner, *, devel: bool = False):
+    def __init__(self, address, runner: LabRunner, *, devel: bool = False,
+                 log_root: Path | None = None):
         super().__init__(address, Handler)
         self.runner = runner
         self.devel = devel
@@ -353,6 +429,8 @@ class SaslikServer(ThreadingHTTPServer):
         self.skewer_last_seen = 0.0
         self.skewer_reports: dict[str, dict] = {}
         self.skewer_reports_lock = threading.Lock()
+        self.skewer_audit_log = RotatingLog((log_root or runner.root) / "skewer-api.log",
+                                            PROCESS_LOG_LIMIT, LOG_BACKUPS)
         self.psk_server = None
         self.tls_context: ssl.SSLContext | None = None
         self.tls_certificate: Path | None = None
@@ -442,7 +520,12 @@ class SaslikServer(ThreadingHTTPServer):
             session.close()
         self.gdb_sessions.clear()
         self.guardian_stop()
+        self.skewer_audit_log.close()
         super().server_close()
+
+    def skewer_audit(self, message: str) -> None:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.skewer_audit_log.write(f"{timestamp} {message}\n")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -455,6 +538,12 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = self.server.runner.snapshot()
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
             return self._json(snapshot)
+        if path == "/api/logs/tail":
+            source = parse_qs(parsed.query).get("source", ["saslik"])[0]
+            try:
+                return self._json(web_log_tail(data_root(), self.server.runner.lab, source))
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         if path == "/api/portal-tls":
             if self.server.tls_certificate is None:
                 return self._json({"error": "HTTPS certificate is unavailable"},
@@ -465,13 +554,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
         if path == "/downloads/skewer-linux-amd64.deb":
             return self._skewer_download()
-        if path == "/downloads/tuntom-linux-amd64.deb":
-            return self._tuntom_download()
+        if path in {"/downloads/tuntom-linux-amd64.deb", "/downloads/tuntom_amd64.deb"}:
+            return self._tuntom_download("amd64")
+        if path == "/downloads/tuntom_arm64.deb":
+            return self._tuntom_download("arm64")
         if path == "/api/skewer/reports":
             with self.server.skewer_reports_lock:
                 reports = [dict(report, online=time.monotonic() - report["seen_monotonic"] < 30)
                            for report in self.server.skewer_reports.values()]
             for report in reports:
+                identity = report.get("client_id", "")
+                if identity and self.server.psk_server is not None:
+                    report.update(self.server.psk_server.client_runtime(identity))
                 report.pop("seen_monotonic", None)
             reports.sort(key=lambda report: report["hostname"].casefold())
             return self._json({"reports": reports})
@@ -549,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"state": "error", "detail": str(exc)})
         if path == "/api/crashes/files":
             return self._crash_files(parse_qs(parsed.query).get("workspace", [""])[0])
+        if path == "/api/logpack":
+            return self._logpack(parse_qs(parsed.query).get("workspace", [""])[0])
         if path == "/api/ca":
             query = parse_qs(parsed.query)
             return self._ca(query.get("identity", [""])[0], query.get("workspace", [""])[0])
@@ -636,13 +732,25 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, RuntimeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
-    def _tuntom_download(self) -> None:
-        # Reserve a same-origin bootstrap URL, including plain HTTP deployments.
-        # No release exists yet: do not invent an upstream URL, fetch arbitrary
-        # client input, or return an error document with a .deb content type.
-        return self._json({"available": False, "code": "package_not_published",
-                           "error": "Tuntom DEB balíček zatím není publikovaný."},
-                          HTTPStatus.NOT_IMPLEMENTED)
+    def _tuntom_download(self, architecture: str) -> None:
+        try:
+            package, size = fetch_tuntom_deb(architecture)
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            return self._json({"error": f"Tuntom balíček se nepodařilo stáhnout: {exc}"},
+                              HTTPStatus.BAD_GATEWAY)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/vnd.debian.binary-package")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="tuntom_{architecture}.deb"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            shutil.copyfileobj(package, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            package.close()
 
     def _skewer_download(self) -> None:
         try:
@@ -1032,6 +1140,31 @@ class Handler(BaseHTTPRequestHandler):
             if "path" in locals():
                 path.unlink(missing_ok=True)
 
+    def _logpack(self, workspace: str) -> None:
+        try:
+            lab, instance = self._workspace_target(workspace)
+            handle = tempfile.NamedTemporaryFile(prefix="saslik-logpack-", suffix=".tar.gz",
+                                                 delete=False)
+            path = Path(handle.name)
+            handle.close()
+            save_logpack(data_root(), lab, instance, path)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="saslik-{instance}-logpack.tar.gz"')
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            if "path" in locals():
+                path.unlink(missing_ok=True)
+
     def _workspace_action(self, operation: str, workspace: str, new_name: str,
                           component: str = "") -> None:
         instance = Instance.load(workspace)
@@ -1408,6 +1541,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         pass
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Audit only Skewer HTTP API calls; keep ordinary UI polling quiet."""
+        path = urlparse(self.path).path
+        if not path.startswith("/api/skewer"):
+            return
+        peer = self.client_address[0] if self.client_address else "unknown"
+        self.server.skewer_audit(f"{peer} {self.command} {path} -> {code}")
+
 
 def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
           runner: LabRunner | None = None, *, devel: bool = False) -> None:
@@ -1421,7 +1562,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
     active_runner = runner or LabRunner()
     active_runner.devel = devel
     certificate, key = ensure_portal_tls(data_root() / "portal-tls", host)
-    server = SaslikServer((host, port), active_runner, devel=devel)
+    server = SaslikServer((host, port), active_runner, devel=devel, log_root=data_root())
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certificate, key)
@@ -1458,15 +1599,22 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
             options["psk"] = psk.hex()
         result = server.guardian_exchange(action, **options)
         if not result.get("ok"):
+            detail = str(result.get("error", "unknown guardian failure"))
+            detail = " ".join(detail.split())[:500]
+            server.skewer_audit(f"{client} PSK {action} guardian-error={detail}")
             # Privileged stderr may contain implementation details; expose a
             # stable error, never echo a credential-bearing request.
             return {"ok": False, "error": "Tunnel operation unavailable"}
         return result
     server.psk_server = PskServer((host, server.server_port + 1),
         PairingStore(data_root() / "skewer-clients.json"),
-        paired_status, paired_report, paired_tunnel)
+        paired_status, paired_report, paired_tunnel, audit=server.skewer_audit)
     threading.Thread(target=server.psk_server.serve_forever, daemon=True).start()
     server.start_guardian()
+    maintenance_result = server.guardian_exchange("maintenance")
+    if not maintenance_result.get("ok"):
+        print("Saslik log maintenance: privileged ownership repair failed",
+              file=sys.stderr)
     active_runner.component_action = lambda action, component: server.guardian_request(
         f"component-{action.removesuffix('-component')}", component=component)
     url = f"https://{host}:{server.server_port}/"

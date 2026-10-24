@@ -1,9 +1,8 @@
 import unittest
-from http import HTTPStatus
 from unittest.mock import Mock, patch
 
 from saslik import licensing
-from saslik.server import Handler
+from saslik.server import Handler, fetch_tuntom_deb
 from saslik.tuntom import TunnelSessions
 from saslik.tuntom_supervisor import TunnelSupervisor
 
@@ -13,21 +12,31 @@ class TunnelDistributionTests(unittest.TestCase):
         with patch.object(licensing, "TUNTOM_ENABLED", True):
             self.assertEqual("development-override", licensing.tunnel_features()["tuntom_license"])
 
-    def test_plain_http_download_route_reaches_placeholder(self):
+    def test_plain_http_download_routes_select_architecture(self):
         handler = Mock(path="/downloads/tuntom-linux-amd64.deb")
         Handler.do_GET(handler)
-        handler._tuntom_download.assert_called_once_with()
+        handler._tuntom_download.assert_called_once_with("amd64")
         handler._skewer_download.assert_not_called()
 
-    def test_placeholder_is_not_a_package_and_does_not_fetch(self):
-        handler = Mock()
-        with patch("saslik.server.urlopen") as fetch, patch.object(licensing, "TUNTOM_ENABLED", False):
-            Handler._tuntom_download(handler)
-        fetch.assert_not_called()
-        value, status = handler._json.call_args.args
-        self.assertEqual(status, HTTPStatus.NOT_IMPLEMENTED)
-        self.assertFalse(value["available"])
-        self.assertEqual(value["code"], "package_not_published")
+        handler.reset_mock()
+        handler.path = "/downloads/tuntom_arm64.deb"
+        Handler.do_GET(handler)
+        handler._tuntom_download.assert_called_once_with("arm64")
+
+    @patch("saslik.server.urlopen")
+    def test_tuntom_fetch_uses_fixed_architecture_release(self, urlopen):
+        response = Mock()
+        response.geturl.return_value = "https://release-assets.githubusercontent.com/file.deb"
+        response.headers = {"Content-Length": "3"}
+        response.read.side_effect = [b"deb", b""]
+        urlopen.return_value = response
+        package, size = fetch_tuntom_deb("arm64")
+        try:
+            self.assertEqual((b"deb", 3), (package.read(), size))
+        finally:
+            package.close()
+        self.assertEqual("https://github.com/astibal/tuntom/releases/latest/download/tuntom_arm64.deb",
+                         urlopen.call_args.args[0])
 
     def test_server_policy_denies_open_and_renewal_but_allows_close(self):
         backend = Mock()

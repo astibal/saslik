@@ -27,6 +27,16 @@ class PairingStore:
         self.path = path
         self.lock = threading.RLock()
         self.clients = json.loads(path.read_text()) if path.exists() else {}
+        # Pairings created before tunnel support only carried the ``status``
+        # capability. They already represent an explicitly trusted Skewer, so
+        # upgrade that legacy shape instead of forcing the user to pair again.
+        migrated = False
+        for value in self.clients.values():
+            if value.get("state") == "active" and value.get("permissions") == ["status"]:
+                value["permissions"] = ["status", "tunnel"]
+                migrated = True
+        if migrated:
+            self._save(self.clients)
         self.invitation = "invite-" + secrets.token_hex(16)
         self.secret = secrets.token_bytes(32)
         self.reservation = None
@@ -122,13 +132,17 @@ class PskServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = False
 
-    def __init__(self, address, store: PairingStore, status, report=None, tunnel=None):
+    def __init__(self, address, store: PairingStore, status, report=None, tunnel=None,
+                 audit=None):
         if not hasattr(ssl.SSLContext, "set_psk_server_callback"):
             raise RuntimeError("Skewer PSK requires Python 3.13+ with OpenSSL PSK support")
         self.store, self.status = store, status
         self.report = report
         self.tunnel = tunnel
+        self.audit = audit or (lambda _message: None)
         self.slots = threading.BoundedSemaphore(16)
+        self.client_activity: dict[str, dict] = {}
+        self.client_activity_lock = threading.Lock()
         store.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.store_lock = os.open(str(store.path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
@@ -141,6 +155,33 @@ class PskServer(socketserver.ThreadingTCPServer):
                 os.close(self.store_lock)
             self.store_lock = None
             raise
+
+    def observe_client(self, identity: str | None, address: str, action: str,
+                       response: object) -> None:
+        if not identity or not identity.startswith("client-"):
+            return
+        now = time.monotonic()
+        accepted = not isinstance(response, dict) or response.get("ok", True)
+        with self.client_activity_lock:
+            state = self.client_activity.setdefault(identity, {})
+            state.update(source_ip=address, seen_monotonic=now)
+            if accepted and action in {"tunnel-open", "tunnel-heartbeat"}:
+                try:
+                    lease_seconds = max(0, min(float(response.get("lease_seconds", 0)), 3600))
+                except (AttributeError, TypeError, ValueError):
+                    lease_seconds = 0
+                state["tunnel_until"] = now + lease_seconds
+            elif accepted and action == "tunnel-close":
+                state["tunnel_until"] = 0
+
+    def client_runtime(self, identity: str) -> dict:
+        now = time.monotonic()
+        with self.client_activity_lock:
+            state = dict(self.client_activity.get(identity, {}))
+        return {
+            "source_ip": state.get("source_ip", ""),
+            "tunnel_active": state.get("tunnel_until", 0) > now,
+        }
 
     def server_close(self):
         super().server_close()
@@ -195,13 +236,23 @@ class PskHandler(socketserver.BaseRequestHandler):
                     raw += chunk
                 if len(raw) > 262144 or not raw.endswith(b"\n"):
                     return
+                request = None
                 try:
                     request = json.loads(raw)
                     if not isinstance(request, dict):
                         raise ValueError("Expected an object")
+                    action = str(request.get("action", "unknown"))
                     response = self.server.store.request(identity, request, self.server.status, self.server.report, self.server.tunnel)
-                except (ValueError, KeyError, TypeError):
+                    peer = identity if identity and identity != self.server.store.invitation else "pairing-invitation"
+                    outcome = "ok" if not isinstance(response, dict) or response.get("ok", True) else "rejected"
+                    self.server.audit(f"{peer} PSK {action} -> {outcome}")
+                except (ValueError, KeyError, TypeError) as exc:
+                    action = str(request.get("action", "invalid")) if isinstance(request, dict) else "invalid"
+                    peer = identity if identity and identity != self.server.store.invitation else "unpaired"
+                    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+                    self.server.audit(f"{peer} PSK {action} -> rejected: {reason}")
                     response = {"error": "Request rejected"}
+                self.server.observe_client(identity, self.client_address[0], action, response)
                 connection.sendall(json.dumps(response).encode() + b"\n")
         except (OSError, ssl.SSLError):
             pass  # Never log request payloads or PSK identities on handshake failures.

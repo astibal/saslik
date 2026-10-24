@@ -5,11 +5,45 @@ from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
                            app_launch_command, normalize_skewer_report,
-                           fetch_skewer_deb, open_frontend, skewer_discovery)
+                           fetch_skewer_deb, open_frontend, skewer_discovery,
+                           web_log_tail)
 
 
 class DummySocket:
     pass
+
+
+class WebLogTests(unittest.TestCase):
+    def test_named_component_log_is_returned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lab = root / "instances/lab1"
+            (lab / "state").mkdir(parents=True)
+            (lab / "state/smithproxy.log").write_text("proxy output\n", encoding="utf-8")
+
+            value = web_log_tail(root, lab, "smithproxy")
+
+            self.assertEqual("proxy output\n", value["data"])
+            self.assertFalse(value["truncated"])
+
+    def test_unknown_log_source_cannot_be_used_as_a_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(ValueError):
+                web_log_tail(root, root / "lab", "../../secret")
+
+    def test_tuntom_source_combines_dynamic_slot_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lab = root / "instances/lab1"
+            (lab / "state").mkdir(parents=True)
+            (lab / "state/tuntom-1.log").write_text("first\n", encoding="utf-8")
+            (lab / "state/tuntom-3.log").write_text("third\n", encoding="utf-8")
+
+            value = web_log_tail(root, lab, "tuntom")
+
+            self.assertIn("=== tuntom-1.log ===\nfirst", value["data"])
+            self.assertIn("=== tuntom-3.log ===\nthird", value["data"])
 
 
 class BrokenWriter:

@@ -18,7 +18,9 @@ class EndpointTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.manager = Mock(instance="test", state=self.root)
-        self.backend = SystemdTunnelEndpoint(self.manager, Path("/bin/true"), runtime=self.root)
+        (self.root / "sxp-test").touch()
+        self.backend = SystemdTunnelEndpoint(self.manager, Path("/bin/true"), runtime=self.root,
+                                             netns_root=self.root)
         self.backend.run = Mock(return_value=Mock(stdout="[]"))
         self.lease = TunnelLeases(lambda _: None).acquire("peer")
 
@@ -60,3 +62,10 @@ class EndpointTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.backend.start(self.lease, bytes(16))
         self.backend.run.assert_not_called()
+
+    @patch("saslik.tuntom_endpoint.os.geteuid", return_value=0)
+    def test_start_reports_missing_lab_namespace(self, _):
+        (self.root / "sxp-test").unlink()
+        with self.assertRaisesRegex(RuntimeError, "namespace is not running"):
+            self.backend.start(self.lease, bytes(16))
+        self.manager._start_component.assert_not_called()
