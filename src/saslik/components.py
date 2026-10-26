@@ -726,7 +726,8 @@ class SystemdComponents:
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             # Exercise the real path.  Viewer binds the workspace loopback;
             # the namespace TLS relay is the only intentional ingress.
-            checks.append((f"https://{address}:15174/readyz", {}, True))
+            checks.append((f"https://{address}:15174/readyz",
+                           {"Host": "127.0.0.1"}, True))
         pending = list(checks)
         deadline = time.monotonic() + 30
         while pending and time.monotonic() < deadline:
@@ -772,7 +773,8 @@ class SystemdComponents:
         while time.monotonic() < deadline:
             request = urllib.request.Request(
                 f"http://{self.runtime.namespace_address}:15175/readyz",
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}",
+                         "Host": "127.0.0.1"},
             )
             try:
                 with urllib.request.urlopen(request, timeout=1):

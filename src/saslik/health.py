@@ -145,7 +145,8 @@ def collect(lab: Path, *, include_lored: bool = False,
             f"http://{namespace_address}:8091/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
         checks["pcap_viewer"] = lambda: _http_check(
-            f"https://{namespace_address}:15174/readyz", insecure=True)
+            f"https://{namespace_address}:15174/readyz",
+            {"Host": "127.0.0.1"}, True)
         try:
             storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
                 encoding="ascii").strip()
@@ -153,7 +154,8 @@ def collect(lab: Path, *, include_lored: bool = False,
             storage_token = ""
         checks["pcap_storage"] = lambda: _http_check(
             f"http://{namespace_address}:15175/readyz",
-            {"Authorization": f"Bearer {storage_token}"} if storage_token else {})
+            ({"Authorization": f"Bearer {storage_token}", "Host": "127.0.0.1"}
+             if storage_token else {"Host": "127.0.0.1"}))
     snapshots = {
         "listener_stats": lambda: _json_check(
             f"https://{namespace_address}:55580/api/diag/proxy/listener/stats",
