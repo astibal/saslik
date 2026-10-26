@@ -16,8 +16,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .licensing import (EntitlementMissing, LicensingError, bootstrap_issuer,
-                        install_issuer, license_grant)
+from .licensing import (DEFAULT_ISSUER, EntitlementMissing, LicensingError,
+                        bootstrap_issuer, install_issuer, license_grant)
 from .settings import component_environment, component_restart_on_failure, setting_value
 
 
@@ -467,7 +467,7 @@ class SystemdComponents:
             public_key = setting_value(self.lab, "license_issuer_key")
             issuer_ready = False
             if isinstance(public_key, str) and public_key.strip():
-                install_issuer("smithproxy", public_key)
+                install_issuer(DEFAULT_ISSUER, public_key)
                 issuer_ready = True
             else:
                 try:

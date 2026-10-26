@@ -76,21 +76,21 @@ class LicensingTests(unittest.TestCase):
                 with connection:
                     while chunk := connection.recv(4096):
                         received.append(chunk)
-                    connection.sendall(b"OK issuer=smithproxy\n")
+                    connection.sendall(b"OK issuer=saslik.io-authority\n")
 
         thread = threading.Thread(target=server, daemon=True)
         thread.start()
         ready.wait(1)
-        install_issuer("smithproxy", key, socket_path=path)
+        install_issuer("saslik.io-authority", key, socket_path=path)
         thread.join(1)
         command, body = b"".join(received).split(b"\n", 1)
         self.assertEqual(
-            f"INSTALL-ISSUER smithproxy {len(key.encode())}".encode(), command)
+            f"INSTALL-ISSUER saslik.io-authority {len(key.encode())}".encode(), command)
         self.assertEqual(key.encode(), body)
 
     def test_signed_issuer_is_sent_and_cached_only_after_acceptance(self):
-        record = "v=saslik1;issuer=smithproxy;key=abc"
-        path, _ = self.serve("OK issuer=smithproxy")
+        record = "v=saslik1;issuer=saslik.io-authority;key=abc"
+        path, _ = self.serve("OK issuer=saslik.io-authority")
         with tempfile.TemporaryDirectory() as directory, \
                 patch("saslik.licensing.query_txt", return_value=[record]):
             lab = Path(directory)
@@ -99,7 +99,7 @@ class LicensingTests(unittest.TestCase):
                 lab / "state/licensing/dns-key.txt").read_text())
 
     def test_rejected_signed_issuer_is_not_cached(self):
-        record = "v=saslik1;issuer=smithproxy;key=bad"
+        record = "v=saslik1;issuer=saslik.io-authority;key=bad"
         path, _ = self.serve("ERR DNS key record signature is invalid")
         with tempfile.TemporaryDirectory() as directory, \
                 patch("saslik.licensing.query_txt", return_value=[record]):
