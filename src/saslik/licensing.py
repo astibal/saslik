@@ -8,6 +8,7 @@ from .dns import DnsLookupError, query_txt
 
 
 DEFAULT_SOCKET = Path("/run/saslik/licensing.sock")
+DEFAULT_ISSUER = "saslik.io-authority"
 MAX_RESPONSE = 64 * 1024
 
 # Server authority for the commercial tunnel integration. Temporarily enabled

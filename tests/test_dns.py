@@ -8,7 +8,7 @@ class DnsTests(unittest.TestCase):
     def test_parses_split_txt_strings(self):
         query_id = 0x1234
         question = b"\x07_saslik\x07example\x00" + struct.pack("!HH", 16, 1)
-        value = b"v=saslik1;issuer=smithproxy"
+        value = b"v=saslik1;issuer=saslik.io-authority"
         rdata = bytes([10]) + value[:10] + bytes([len(value) - 10]) + value[10:]
         answer = (b"\xc0\x0c" + struct.pack("!HHIH", 16, 1, 60, len(rdata)) +
                   rdata)
