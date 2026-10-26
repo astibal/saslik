@@ -27,8 +27,8 @@ test:
 	bash -n scripts/export-appliance.sh
 
 # The raw disk is the canonical, hypervisor-neutral appliance artifact.
-# Until the OS provisioning recipe lands, APPLIANCE_RAW_SOURCE supplies the
-# bootable disk produced by the provisioner; it may itself be raw or qcow2.
+# APPLIANCE_RAW_SOURCE optionally imports an existing bootable disk instead
+# of provisioning Ubuntu; it may itself be raw or qcow2.
 appliance: appliance-qcow2
 
 appliance-rootfs: $(APPLIANCE_ROOTFS_STAMP)

@@ -119,7 +119,13 @@ mount --bind /dev "$mount_dir/dev"
 mount --bind /dev/pts "$mount_dir/dev/pts"
 mount -t proc proc "$mount_dir/proc"
 mount -t sysfs sys "$mount_dir/sys"
-mount --bind /run "$mount_dir/run"
+# Never expose the host systemd/D-Bus sockets to commands in the image.
+mount -t tmpfs tmpfs "$mount_dir/run"
+mkdir -p "$mount_dir/etc/default/grub.d"
+cat >"$mount_dir/etc/default/grub.d/99-saslik.cfg" <<'EOF'
+GRUB_TIMEOUT=1
+GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8"
+EOF
 chroot "$mount_dir" grub-install --target=i386-pc --recheck "$loop"
 chroot "$mount_dir" grub-install --target=x86_64-efi \
     --efi-directory=/boot/efi --bootloader-id=Saslik --removable --no-nvram

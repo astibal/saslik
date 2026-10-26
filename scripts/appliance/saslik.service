@@ -1,0 +1,27 @@
+[Unit]
+Description=Saslik appliance portal
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# The current launcher controls namespaces and system services. Keep this
+# privilege boundary explicit; do not grant a general-purpose user sudo ALL.
+User=root
+Environment=SASLIK_DATA_DIR=/var/lib/saslik
+Environment=SASLIK_CONFIG_DIR=/var/lib/saslik/config
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/saslik
+StateDirectory=saslik
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/saslik/venv/bin/saslik web --host 0.0.0.0 --port 8765
+KillSignal=SIGINT
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

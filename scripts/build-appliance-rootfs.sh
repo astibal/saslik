@@ -86,6 +86,27 @@ tar -C "$source_dir" \
 chroot "$staging" python3 -m venv /opt/saslik/venv
 chroot "$staging" /opt/saslik/venv/bin/pip install --no-cache-dir /opt/saslik/source
 
+# Provision the portal, not a pre-initialized workspace: credentials, TLS keys
+# and workspace CAs must be generated separately in every deployed VM.
+install -m 0644 "$source_dir/scripts/appliance/saslik.service" \
+    "$staging/etc/systemd/system/saslik.service"
+chroot "$staging" systemctl enable saslik.service
+install -d -m 0700 "$staging/var/lib/saslik"
+# Helpers launched by sudo/systemd do not inherit the portal environment.
+# Keep their default paths pointing to the same persistent data/config root.
+install -d -m 0700 "$staging/var/lib/saslik/config" \
+    "$staging/root/.config" "$staging/root/.local/share"
+ln -s /var/lib/saslik "$staging/root/.local/share/saslik"
+ln -s /var/lib/saslik/config "$staging/root/.config/saslik"
+
+# Do not distribute a shared machine identity or SSH host private keys.
+truncate -s 0 "$staging/etc/machine-id"
+rm -f -- "$staging/var/lib/dbus/machine-id"
+ln -s /etc/machine-id "$staging/var/lib/dbus/machine-id"
+rm -f -- "$staging"/etc/ssh/ssh_host_*_key "$staging"/etc/ssh/ssh_host_*_key.pub
+# SSH is opt-in: no default password or private login key is shipped.
+chroot "$staging" systemctl disable ssh.service ssh.socket
+
 cat >"$staging/etc/hostname" <<'EOF'
 saslik
 EOF
