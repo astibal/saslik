@@ -150,3 +150,29 @@ def license_grant(feature: str, component: str,
             raise LicensingError("Licenční služba poslala neplatný argument.")
         result[key] = value
     return result
+
+
+def licensing_report(*, socket_path: Path | None = None) -> dict:
+    """Return the daemon's validated REPORT response as UI-safe data."""
+    response = _query("REPORT", socket_path=socket_path)
+    lines = response.splitlines()
+    if not lines or lines[0] != "OK":
+        raise LicensingError("Licenční služba poslala neplatný report.")
+
+    report: dict = {"root": None, "signing": [], "licenses": []}
+    for line in lines[1:]:
+        fields = line.split("\t")
+        if fields[0] == "ROOT" and len(fields) == 3:
+            report["root"] = {"version": fields[1], "fingerprint": fields[2]}
+        elif fields[0] == "SIGNING" and len(fields) == 4:
+            report["signing"].append({
+                "name": fields[1], "version": fields[2], "fingerprint": fields[3],
+            })
+        elif fields[0] == "LICENSE" and len(fields) >= 2:
+            report["licenses"].append({"id": fields[1], "features": fields[2:]})
+        else:
+            raise LicensingError("Licenční služba poslala neplatný řádek reportu.")
+
+    report["signing"].sort(key=lambda item: (item["name"], item["version"]))
+    report["licenses"].sort(key=lambda item: item["id"])
+    return report

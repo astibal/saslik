@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.sanity import collect, report
+from saslik.runtime import WorkspaceRuntime
 
 
 class SanityTests(unittest.TestCase):
@@ -13,7 +14,8 @@ class SanityTests(unittest.TestCase):
             lab = Path(directory)
             with patch("saslik.sanity._processes", return_value=[]), \
                     patch("saslik.sanity.Path.exists", return_value=False):
-                self.assertTrue(all(not values for _, values in collect(lab)))
+                self.assertTrue(all(not values for _, values in
+                                    collect(lab, WorkspaceRuntime(1))))
 
     @patch("saslik.sanity.collect", return_value=[
         ("ports", ["tcp LISTEN 0 128 0.0.0.0:55000"]),
@@ -21,7 +23,7 @@ class SanityTests(unittest.TestCase):
     ])
     @patch("builtins.print")
     def test_report_names_artifacts_before_cleanup(self, output, _collect):
-        self.assertEqual(0, report(Path("/tmp/lab")))
+        self.assertEqual(0, report(Path("/tmp/lab"), WorkspaceRuntime(1)))
         rendered = "\n".join(" ".join(str(value) for value in call.args)
                              for call in output.call_args_list)
         self.assertIn("PRE-START SANITY CHECK", rendered)

@@ -5,6 +5,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from saslik.routing import _root, apply_starting_template, routing_up
+from saslik.runtime import WorkspaceRuntime
 
 
 class RoutingTests(unittest.TestCase):
@@ -64,7 +65,7 @@ content_profiles = { default = { webhook_enable = false; }; };
             command, 2 if command[:4] == ["ip", "route", "show", "table"] else 0,
             stdout="", stderr="Error: ipv4: FIB table does not exist.",
         )
-        routing_up(1000)
+        routing_up(1000, WorkspaceRuntime(1))
         probe = run.call_args_list[0]
         self.assertTrue(probe.kwargs["tolerate"])
 
@@ -76,8 +77,8 @@ content_profiles = { default = { webhook_enable = false; }; };
             (lab / "state").mkdir()
             (lab / "state/smithproxy.cfg").write_text("accept_tproxy = true")
             with self.assertRaisesRegex(RuntimeError, "nft failed"):
-                _root("up", lab, 1000)
-        down.assert_called_once_with()
+                _root("up", lab, 1000, WorkspaceRuntime(1))
+        down.assert_called_once_with(WorkspaceRuntime(1))
 
 if __name__ == "__main__":
     unittest.main()

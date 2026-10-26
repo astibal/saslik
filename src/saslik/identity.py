@@ -150,6 +150,8 @@ def _openssl(*args: str) -> None:
 
 
 def rotate(lab: Path, fallback: str = "default") -> Path:
+    from .runtime import WorkspaceRuntime
+    runtime = WorkspaceRuntime.for_workspace(lab, fallback)
     state = lab / "state"
     config = state / "smithproxy.cfg"
     state_env = state / "state.env"
@@ -193,7 +195,8 @@ def rotate(lab: Path, fallback: str = "default") -> Path:
             "basicConstraints=critical,CA:FALSE\n"
             "keyUsage=critical,digitalSignature,keyEncipherment\n"
             "extendedKeyUsage=serverAuth\n"
-            "subjectAltName=DNS:smithproxy-test,IP:10.254.77.2,IP:10.254.77.1\n",
+            f"subjectAltName=DNS:smithproxy-test,IP:{runtime.namespace_address},"
+            f"IP:{runtime.host_address}\n",
             encoding="ascii",
         )
         _openssl("x509", "-req", "-in", str(work / "server.csr"),

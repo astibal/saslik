@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "Smithproxy project" }]
-dependencies = []
+dependencies = ["segno>=1.6,<2"]
 
 [project.scripts]
 saslik = "saslik.cli:main"

@@ -6,8 +6,10 @@ from saslik.cli import SudoLease, acquire_privileges, parser
 
 
 class CliTests(unittest.TestCase):
-    def test_browser_is_not_opened_by_default(self):
-        self.assertEqual("none", parser().parse_args([]).display_mode)
+    def test_browser_flags_are_not_part_of_the_cli(self):
+        self.assertFalse(hasattr(parser().parse_args([]), "display_mode"))
+        with self.assertRaises(SystemExit):
+            parser().parse_args(["--browser"])
 
     def test_devel_mode_is_explicit(self):
         self.assertFalse(parser().parse_args([]).devel)

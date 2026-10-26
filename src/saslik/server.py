@@ -19,9 +19,8 @@ import sys
 import threading
 import tempfile
 import time
-import webbrowser
 import zipfile
-from .licensing import tunnel_features
+from .licensing import LicensingError, licensing_report, tunnel_features
 from .portal_auth import (ensure_portal_credentials, portal_account_info,
                           record_portal_login, set_portal_password,
                           verify_portal_password)
@@ -33,6 +32,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+
+import segno
 
 from .runner import LabRunner, data_root
 from .ca import install_store, remove_store, store_status
@@ -50,7 +51,7 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 from .dev_queries import run_query as run_dev_query
-from .network import HOST_IF, NS_ADDR
+from .runtime import WorkspaceRuntime
 from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
@@ -116,11 +117,6 @@ def web_log_tail(root: Path, lab: Path, source: str) -> dict:
     return log_tail(lab / "state" / filename)
 
 
-APP_BROWSERS = (
-    "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
-    "microsoft-edge", "microsoft-edge-stable", "brave-browser", "vivaldi-stable", "vivaldi",
-)
-
 SKEWER_DEB_URL = (
     "https://github.com/astibal/saslik-skewer/releases/latest/download/"
     "skewer-linux-amd64.deb"
@@ -179,7 +175,8 @@ def fetch_tuntom_deb(architecture: str):
 
 def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
     """Describe the directly-connected lab ingress without configuring the client."""
-    ifindex = network_root / HOST_IF / "ifindex"
+    runtime = WorkspaceRuntime.for_instance(workspace)
+    ifindex = network_root / runtime.host_interface / "ifindex"
     try:
         generation = ifindex.read_text(encoding="ascii").strip()
         available = True
@@ -189,8 +186,8 @@ def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")
         "version": 1,
         "available": available,
         "workspace": workspace,
-        "gateway": NS_ADDR,
-        "host_interface": HOST_IF,
+        "gateway": runtime.namespace_address,
+        "host_interface": runtime.host_interface,
         "generation": generation,
     }
 
@@ -227,6 +224,16 @@ def _safe_report_icon(value: object) -> str:
     if not (1 <= width <= 64 and 1 <= height <= 64):
         return ""
     return prefix + base64.b64encode(data).decode("ascii")
+
+
+def pairing_qr_data_url(link: str) -> str:
+    """Render a pairing secret locally without disclosing it to a QR service."""
+    qr = segno.make(link, error="m")
+    output = io.BytesIO()
+    qr.save(output, kind="svg", scale=5, border=2,
+            dark="#101613", light="#f4f7f5")
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def normalize_skewer_report(value: object) -> dict:
@@ -393,32 +400,6 @@ class SpiderBootstrapStore:
             self._grants.pop(code, None)
 
 
-def open_frontend(url: str, mode: str = "app") -> str:
-    if mode == "none":
-        return "none"
-    if mode == "app":
-        for name in APP_BROWSERS:
-            executable = shutil.which(name)
-            if executable:
-                subprocess.Popen(
-                    [executable, f"--app={url}"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                return name
-    webbrowser.open(url)
-    return "browser"
-
-
-def app_launch_command(url: str) -> str:
-    for name in APP_BROWSERS:
-        executable = shutil.which(name)
-        if executable:
-            return f"{executable} --app={url}"
-    return f"chromium --app={url}"
-
-
 class SaslikServer(ThreadingHTTPServer):
     def __init__(self, address, runner: LabRunner, *, devel: bool = False,
                  log_root: Path | None = None):
@@ -440,6 +421,8 @@ class SaslikServer(ThreadingHTTPServer):
         self.skewer_last_seen = 0.0
         self.skewer_reports: dict[str, dict] = {}
         self.skewer_reports_lock = threading.Lock()
+        self.tunnel_targets: dict[str, str] = {}
+        self.tunnel_targets_lock = threading.Lock()
         self.skewer_audit_log = RotatingLog((log_root or runner.root) / "skewer-api.log",
                                             PROCESS_LOG_LIMIT, LOG_BACKUPS)
         self.psk_server = None
@@ -540,6 +523,10 @@ class SaslikServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # The UI polls several APIs. Reusing one TLS connection avoids a complete
+    # certificate verification (and noisy browser diagnostics for the local
+    # self-signed certificate) for every individual request.
+    protocol_version = "HTTP/1.1"
     server: SaslikServer
 
     def _portal_token(self) -> str:
@@ -576,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
                 'autocomplete="username" required autofocus></label>'
                 '<label>Password<input name="password" type="password" '
                 'autocomplete="current-password" required></label>'
-                '<button type="submit">Enter the lab <span>→</span></button></form>'
+                '<button type="submit">Enter the workspace <span>→</span></button></form>'
             )
         else:
             title = "Claim your Saslik."
@@ -611,6 +598,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header("Location", "/login")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
             self.end_headers()
         return False
 
@@ -712,6 +700,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", "/")
         self.send_header("Set-Cookie", f"saslik_session={token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -721,6 +710,7 @@ class Handler(BaseHTTPRequestHandler):
             if self._portal_session():
                 self.send_response(HTTPStatus.SEE_OTHER)
                 self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             return self._login_page()
@@ -732,6 +722,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "/login")
             self.send_header("Set-Cookie", "saslik_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         if path == "/connect":
@@ -757,6 +748,11 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = self.server.runner.snapshot()
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
             return self._json(snapshot)
+        if path == "/api/licensing":
+            try:
+                return self._json({"available": True, **licensing_report()})
+            except LicensingError as exc:
+                return self._json({"available": False, "error": str(exc)})
         if path == "/api/logs/tail":
             source = parse_qs(parsed.query).get("source", ["saslik"])[0]
             try:
@@ -1142,6 +1138,8 @@ class Handler(BaseHTTPRequestHandler):
                     with store.lock:
                         store.revoke(identity)
                         result = self.server.guardian_exchange("tunnel-revoke", peer=identity)
+                    with self.server.tunnel_targets_lock:
+                        self.server.tunnel_targets.pop(identity, None)
                     if not result.get("ok"):
                         return self._json({"error": "Credential revoked; tunnel cleanup pending lease expiry"}, status=503)
                 elif action not in {"link", "list"}:
@@ -1152,7 +1150,9 @@ class Handler(BaseHTTPRequestHandler):
                 target = str(value.get("host") or host)
                 if not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", target):
                     raise ValueError()
-                return self._json({"link": store.link(target, self.server.psk_server.server_address[1])})
+                link = store.link(target, self.server.psk_server.server_address[1])
+                return self._json({"link": link,
+                                   "qr": pairing_qr_data_url(link)})
             except (ValueError, TypeError, KeyError):
                 return self._json({"error": "Neplatný požadavek párování."}, HTTPStatus.BAD_REQUEST)
         if path.startswith("/api/dev/") and not self.server.devel:
@@ -1314,7 +1314,8 @@ class Handler(BaseHTTPRequestHandler):
         if not token:
             raise RuntimeError("Workspace nemá Spider token.")
         backend = self.server.runner.snapshot().get("endpoints", {}).get(
-            "spider_backend", "http://127.0.0.1:18080")
+            "spider_backend",
+            f"https://127.0.0.1:{self.server.runner.runtime.public_port('spider')}")
         code = self.server.spider_bootstraps.issue(
             str(backend), token, normalized_origin)
         self._json({"code": code, "expires_in": int(self.server.spider_bootstraps.lifetime)})
@@ -1349,6 +1350,7 @@ class Handler(BaseHTTPRequestHandler):
                           for value in services.values())
             items.append({
                 "name": instance.name,
+                "runtime": WorkspaceRuntime.for_instance(instance.name).prefix,
                 "selected": instance.name == self.server.runner.instance,
                 "egress": instance.egress,
                 "initialized": (instance.data_dir / "state/smithproxy.cfg").is_file(),
@@ -1439,26 +1441,20 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(result.stderr.strip() or
                                    "Zahození lokálních změn selhalo.")
             return self._json({"ok": True, "workspace": workspace, "discarded": changed})
-        any_running = self.server.runner.operation_running()
-        for candidate in Instance.discover():
-            statuses = SystemdComponents(candidate.data_dir, candidate.name,
-                                         self.server.runner.expose_address,
-                                         devel=self.server.devel).status()
-            any_running = any_running or any(
-                value.get("state") in {"running", "starting"} for value in statuses.values())
-        if any_running:
-            raise RuntimeError("Workspace nelze změnit, dokud běží kterýkoliv lab.")
+        if self.server.runner.operation_running():
+            raise RuntimeError("Workspace nelze přepnout během probíhající operace.")
         services = SystemdComponents(instance.data_dir, instance.name,
                                      self.server.runner.expose_address,
                                      devel=self.server.devel).status()
-        if any(value.get("state") in {"running", "starting"} for value in services.values()):
-            raise RuntimeError("Běžící workspace nelze přepnout ani přejmenovat.")
         if operation == "select":
             instance.ensure_config()
             self.server.runner.select_instance(instance)
             remember_instance(instance.name)
             self.server.guardian_arm()
             return self._json({"ok": True, "workspace": instance.name})
+        if any(value.get("state") in {"running", "starting"}
+               for value in services.values()):
+            raise RuntimeError("Běžící workspace nelze přejmenovat ani klonovat.")
         if operation == "create":
             if workspace in {item.name for item in Instance.discover()}:
                 raise RuntimeError(f"Workspace už existuje: {workspace}")
@@ -1495,7 +1491,7 @@ class Handler(BaseHTTPRequestHandler):
         services = self.server.runner._service_status()
         if self.server.runner.operation_running() or any(
                 value.get("state") in {"running", "starting"} for value in services.values()):
-            raise RuntimeError("Binary bundle lze měnit jen při zastaveném labu.")
+            raise RuntimeError("Binary bundle lze měnit jen při zastaveném workspace.")
 
     def _binary_load(self) -> None:
         try:
@@ -1543,7 +1539,7 @@ class Handler(BaseHTTPRequestHandler):
         services = self.server.runner._service_status()
         if self.server.runner.operation_running() or any(
                 value.get("state") in {"running", "starting"} for value in services.values()):
-            raise RuntimeError("Identitu lze přepnout jen při zastaveném labu.")
+            raise RuntimeError("Identitu lze přepnout jen při zastaveném workspace.")
         if operation not in {"activate", "rotate", "import", "rename"}:
             raise RuntimeError("Neznámá operace s identitou.")
         command = ["sudo", "-n", sys.executable, "-m", "saslik.identity", operation,
@@ -1608,7 +1604,10 @@ class Handler(BaseHTTPRequestHandler):
         action = str(body.get("action", ""))
         session = str(body.get("session", ""))
         if action == "open":
-            stream = socket.create_connection(("127.0.0.1", 55000), timeout=3)
+            runtime = WorkspaceRuntime.for_workspace(
+                self.server.runner.lab, self.server.runner.instance)
+            stream = socket.create_connection(
+                (runtime.namespace_address, 55000), timeout=3)
             stream.setblocking(False)
             session = secrets.token_urlsafe(18)
             with self.server.cli_lock:
@@ -1798,7 +1797,7 @@ class Handler(BaseHTTPRequestHandler):
         self.server.skewer_audit(f"{peer} {self.command} {path} -> {code}")
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
+def serve(host: str = "127.0.0.1", port: int = 8765,
           runner: LabRunner | None = None, *, devel: bool = False) -> None:
     try:
         loopback = ipaddress.ip_address(host).is_loopback
@@ -1843,9 +1842,13 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         # arbitrary remote fields (paths, addresses or executable arguments).
         action = payload["action"]
         options = {"peer": client, "context": payload.get("context", "")}
+        with server.tunnel_targets_lock:
+            target_name = (active_runner.instance if action == "tunnel-open" else
+                           server.tunnel_targets.get(client, active_runner.instance))
+        target = Instance.load(target_name)
         if action == "tunnel-open":
             options["psk"] = psk.hex()
-        result = server.guardian_exchange(action, **options)
+        result = server.guardian_exchange(action, target, **options)
         if not result.get("ok"):
             detail = str(result.get("error", "unknown guardian failure"))
             detail = " ".join(detail.split())[:500]
@@ -1853,6 +1856,11 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
             # Privileged stderr may contain implementation details; expose a
             # stable error, never echo a credential-bearing request.
             return {"ok": False, "error": "Tunnel operation unavailable"}
+        with server.tunnel_targets_lock:
+            if action == "tunnel-open":
+                server.tunnel_targets[client] = target.name
+            elif action == "tunnel-close":
+                server.tunnel_targets.pop(client, None)
         return result
     server.psk_server = PskServer((host, server.server_port + 1),
         PairingStore(data_root() / "skewer-clients.json"),
@@ -1873,11 +1881,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
         print(f"Portal login: první návštěva {url} nastaví heslo účtu saslik.")
     if devel:
         print("Dev režim je zapnutý; UI může měnit zdrojové checkouty workspace.")
-    print(f"App okno spustíš ručně: {app_launch_command(url)}")
     print("Ctrl-C ukončí Saslik.")
-    opened_with = open_frontend(url, display_mode)
-    if display_mode == "app" and opened_with == "browser":
-        print("App browser nenalezen, otevírám běžný výchozí browser.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1885,4 +1889,4 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
     finally:
         server.server_close()
         if active_runner.spider.is_dir():
-            print("Guardian uklízí routing a lab…")
+            print("Guardian uklízí routing a workspace…")

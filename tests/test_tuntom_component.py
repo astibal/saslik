@@ -79,7 +79,7 @@ class TuntomComponentTests(unittest.TestCase):
         manager = SystemdComponents(self.lab, "test")
         with patch.object(manager, "prepare_tuntom"), patch("saslik.components._run") as run:
             manager.restart_component("tuntom")
-        run.assert_called_once_with(["systemctl", "stop", "saslik-test-tuntom-*.service"])
+        run.assert_called_once_with(["systemctl", "stop", "ws-001-tuntom-*.service"])
 
     def test_binary_bundle_still_builds_tuntom(self):
         runner = LabRunner(self.lab)

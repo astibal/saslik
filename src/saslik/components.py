@@ -5,6 +5,7 @@ import grp
 import ipaddress
 import os
 import pwd
+import re
 import secrets
 import shutil
 import signal
@@ -18,13 +19,10 @@ from pathlib import Path
 
 from .licensing import (DEFAULT_ISSUER, EntitlementMissing, LicensingError,
                         bootstrap_issuer, install_issuer, license_grant)
+from .runtime import WorkspaceRuntime
 from .settings import component_environment, component_restart_on_failure, setting_value
 
 
-NAMESPACE = "sxp-test"
-PROBE_NAMESPACE = "saslik-probe"
-NS_ADDR = "10.254.77.2"
-HOST_ADDR = "10.254.77.1"
 SPIDER_FRONTEND_PORT = 25173
 PCAP_VIEWER_PORT = 25174
 
@@ -58,17 +56,6 @@ def _state_env(lab: Path) -> dict[str, str]:
     return result
 
 
-def _unit_instance(instance: str) -> str:
-    # Instance names have already passed Instance.validate_instance_name.
-    # Keep unit names readable while avoiding '.' being interpreted as a
-    # suffix separator by humans and tools.
-    return "".join(character if character.isalnum() else "-" for character in instance)
-
-
-def unit_name(instance: str, component: str) -> str:
-    return f"saslik-{_unit_instance(instance)}-{component}.service"
-
-
 @dataclass(frozen=True)
 class Component:
     name: str
@@ -84,7 +71,7 @@ class Component:
 
 
 class SystemdComponents:
-    """Own all long-running lab processes as transient systemd services.
+    """Own all long-running workspace processes as transient systemd services.
 
     systemd is the lifecycle authority. PID files left by the old integration
     harness are read only during one-way migration and are never written here.
@@ -95,11 +82,20 @@ class SystemdComponents:
         "frontend.pid", "expose-api.pid", "expose-proxy.pid", "expose-cli.pid",
         "pcap-viewer.pid",
     )
+    BASE_COMPONENT_NAMES = (
+        "smithproxy", "cli-forward", "sift", "spider", "spider-tls",
+        "frontend", "frontend-tls", "pcap-storage", "pcap-viewer",
+        "pcap-viewer-tls", "expose-api", "expose-proxy", "expose-sift",
+        "expose-spider", "expose-frontend", "expose-pcap-storage",
+        "expose-pcap-viewer", "pcap-storage-bridge", "e2e-probe",
+    )
+    DEVEL_COMPONENT_NAMES = ("lored", "lored-bridge", "expose-lored")
 
     def __init__(self, lab: Path, instance: str, expose_address: str = "127.0.0.1",
                  *, devel: bool = False) -> None:
         self.lab = lab
         self.instance = instance
+        self.runtime = WorkspaceRuntime.for_workspace(lab, instance)
         self.devel = devel
         self.state = lab / "state"
         try:
@@ -114,7 +110,11 @@ class SystemdComponents:
 
     @property
     def slice_name(self) -> str:
-        return f"saslik-{_unit_instance(self.instance)}.slice"
+        return self.runtime.slice_name
+
+    def component_names(self) -> tuple[str, ...]:
+        return self.BASE_COMPONENT_NAMES + (
+            self.DEVEL_COMPONENT_NAMES if self.devel else ())
 
     @property
     def tuntom_binary(self) -> Path:
@@ -183,16 +183,44 @@ class SystemdComponents:
         portal_tls = self.lab.parent.parent / "portal-tls"
         portal_certificate = portal_tls / "certificate.pem"
         portal_key = portal_tls / "private-key.pem"
+        namespace = self.runtime.namespace
+        probe_namespace = self.runtime.probe_namespace
+        namespace_address = self.runtime.namespace_address
+
+        def forwarder(name: str, service: str, target_port: int, *,
+                      local_only: bool = False) -> Component:
+            bind = "127.0.0.1" if local_only else self.expose_address
+            listen_port = self.runtime.public_port(service)
+            return Component(
+                name,
+                (socat,
+                 f"TCP4-LISTEN:{listen_port},bind={bind},reuseaddr,fork",
+                 f"TCP4:{namespace_address}:{target_port}"),
+                self.state / f"{name}.log",
+                restart_on_failure=True,
+            )
+
+        def publish_loopback(name: str, port: int) -> Component:
+            """Publish a loopback-only workspace service on its namespace veth."""
+            return Component(
+                name,
+                (socat, f"TCP4-LISTEN:{port},bind={namespace_address},reuseaddr,fork",
+                 f"TCP4:127.0.0.1:{port}"),
+                self.state / f"{name}.log",
+                network_namespace=namespace,
+                restart_on_failure=True,
+            )
 
         def tls_relay(name: str, public_port: int, upstream_port: int) -> Component:
             listen = (
-                f"OPENSSL-LISTEN:{public_port},bind={self.expose_address},reuseaddr,fork,"
+                f"OPENSSL-LISTEN:{public_port},bind={namespace_address},reuseaddr,fork,"
                 f"cert={portal_certificate},key={portal_key},verify=0"
             )
             return Component(
                 name,
                 (socat, listen, f"TCP4:127.0.0.1:{upstream_port}"),
                 self.state / f"{name}.log",
+                network_namespace=namespace,
                 restart_on_failure=True,
             )
         result = [
@@ -200,31 +228,40 @@ class SystemdComponents:
                 "smithproxy",
                 (str(smithproxy), "--config-file", str(config), "--diagnose", "--no-pidfile"),
                 self.state / "smithproxy.log",
-                network_namespace=NAMESPACE,
+                network_namespace=namespace,
                 bind_paths=((self.state / "smithproxy-data", Path("/var/smithproxy/data")),),
                 restart_on_failure=component_restart_on_failure(self.lab, "smithproxy"),
             ),
             Component(
                 "cli-forward",
-                (socat, f"TCP4-LISTEN:55000,bind={NS_ADDR},reuseaddr,fork",
+                (socat, f"TCP4-LISTEN:55000,bind={namespace_address},reuseaddr,fork",
                  "TCP4:127.0.0.1:55000"),
                 self.state / "cli-forward.log",
-                network_namespace=NAMESPACE,
+                network_namespace=namespace,
                 restart_on_failure=True,
             ),
         ]
+        sift_command = [str(sift), "--bind", "0.0.0.0", "--port", "18081"]
+        if self.devel and lored.is_file():
+            sift_command.extend(("--lored-url", "http://127.0.0.1:8091/v1/query"))
+
         result.append(Component(
-            "sift", (str(sift), "--bind", "0.0.0.0", "--port", "18081"),
+            "sift", tuple(sift_command),
             self.state / "sift.log",
+            network_namespace=namespace,
             restart_on_failure=component_restart_on_failure(self.lab, "sift"),
         ))
+        result.append(forwarder("expose-sift", "sift", 18081))
         if self.devel and lored.is_file():
             result.append(Component(
                 "lored", (str(lored), "--pack", str(self.state / "lored/lore-pack.json"),
                           "--port", "8091"),
                 self.state / "lored.log",
+                network_namespace=namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "lored"),
             ))
+            result.append(publish_loopback("lored-bridge", 8091))
+            result.append(forwarder("expose-lored", "lored", 8091, local_only=True))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
             result.append(Component(
@@ -232,8 +269,12 @@ class SystemdComponents:
                 (str(pcap_storage), "--workspace", str(viewer_workspace),
                  "--watch-root", str(self.state), "--port", "15175"),
                 self.state / "pcap-storage.log",
+                network_namespace=namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-storage"),
             ))
+            result.append(publish_loopback("pcap-storage-bridge", 15175))
+            result.append(forwarder("expose-pcap-storage", "pcap-storage", 15175,
+                                    local_only=True))
             result.append(Component(
                 "pcap-viewer",
                 (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
@@ -242,43 +283,56 @@ class SystemdComponents:
                  "--port", str(PCAP_VIEWER_PORT), "--no-browser"),
                 self.state / "pcap-viewer.log",
                 component_environment(self.lab, "pcap-viewer"),
+                network_namespace=namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
             result.append(tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
+            result.append(forwarder("expose-pcap-viewer", "pcap-viewer", 15174))
         result.extend([
                 Component(
                     "spider",
-                    (str(spider), "--bind", "0.0.0.0", "--port", "18080",
+                    (str(spider), "--bind", "127.0.0.1", "--port", "18080",
                      "--smithproxy-url", values["SMITHPROXY_API_URL"],
                      "--callback-url", values["SMITHPROXY_CALLBACK_URL"],
                      "--smithproxy-insecure"),
                     self.state / "spider.log",
                     (f"SPIDER_SMITHPROXY_KEY={values['SMITHPROXY_API_KEY']}",
                      f"SPIDER_TOKEN={values['SPIDER_TOKEN']}"),
+                    network_namespace=namespace,
                     restart_on_failure=component_restart_on_failure(self.lab, "spider"),
                 ),
+                # The frontend is served over HTTPS, so its browser-side API
+                # endpoint must be HTTPS as well.  Keep Spider itself on the
+                # workspace loopback for internal callbacks and terminate TLS
+                # only at the namespace boundary.
+                tls_relay("spider-tls", 18080, 18080),
                 Component(
                     "frontend",
                     (*frontend_command, str(SPIDER_FRONTEND_PORT), "--bind", "127.0.0.1",
                      "--directory", str(self.state / "frontend")),
                     self.state / "frontend.log",
+                    network_namespace=namespace,
                 ),
                 tls_relay("frontend-tls", 15173, SPIDER_FRONTEND_PORT),
+                forwarder("expose-spider", "spider", 18080),
+                forwarder("expose-frontend", "frontend", 15173),
         ])
-        for name, port in (("api", 55580), ("proxy", 33128), ("cli", 55000)):
+        for name, port in (("api", 55580), ("proxy", 33128)):
             result.append(Component(
                 f"expose-{name}",
-                (socat, f"TCP4-LISTEN:{port},bind={self.expose_address},reuseaddr,fork",
-                 f"TCP4:{NS_ADDR}:{port}"),
+                (socat,
+                 f"TCP4-LISTEN:{self.runtime.public_port(name)},bind={self.expose_address},reuseaddr,fork",
+                 f"TCP4:{namespace_address}:{port}"),
                 self.state / f"expose-{name}.log",
                 restart_on_failure=True,
             ))
         result.append(Component(
             "e2e-probe",
             (python, "-m", "saslik.probe", "--output", str(self.state / "e2e-health.json"),
-             "--ca", str(self.state / "certs/default/ca-cert.pem")),
+             "--ca", str(self.state / "certs/default/ca-cert.pem"),
+             "--gateway", self.runtime.probe_gateway),
             self.state / "e2e-probe.log",
-            network_namespace=PROBE_NAMESPACE,
+            network_namespace=probe_namespace,
         ))
         return result
 
@@ -287,12 +341,12 @@ class SystemdComponents:
             self.lab / "build/smithproxy/smithproxy",
             self.state / "smithproxy.cfg",
             self.state / "state.env",
-            Path(f"/run/netns/{NAMESPACE}"),
-            Path(f"/run/netns/{PROBE_NAMESPACE}"),
+            Path(f"/run/netns/{self.runtime.namespace}"),
+            Path(f"/run/netns/{self.runtime.probe_namespace}"),
         ]
         for path in required:
             if not path.exists():
-                raise RuntimeError(f"Lab není připravený, chybí {path}.")
+                raise RuntimeError(f"Workspace není připravený, chybí {path}.")
 
     def _stop_legacy_processes(self) -> None:
         stopped: list[int] = []
@@ -325,20 +379,65 @@ class SystemdComponents:
                         pass
         (self.state / "service.pid").unlink(missing_ok=True)
 
-    @staticmethod
-    def _saslik_forwarder_command(command: str) -> bool:
+    def _saslik_forwarder_command(self, command: str) -> bool:
         """Recognize only socat relays using Saslik's fixed port topology."""
         if "socat" not in command:
             return False
+        address = self.runtime.namespace_address
         pairs = (
-            ("TCP4-LISTEN:55580", f"TCP4:{NS_ADDR}:55580"),
-            ("TCP4-LISTEN:33128", f"TCP4:{NS_ADDR}:33128"),
-            ("TCP4-LISTEN:55000", f"TCP4:{NS_ADDR}:55000"),
-            (f"TCP4-LISTEN:55000,bind={NS_ADDR}", "TCP4:127.0.0.1:55000"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('api')}", f"TCP4:{address}:55580"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('proxy')}", f"TCP4:{address}:33128"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('spider')}", f"TCP4:{address}:18080"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('sift')}", f"TCP4:{address}:18081"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('lored')}", f"TCP4:{address}:8091"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('pcap-storage')}", f"TCP4:{address}:15175"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('frontend')}", f"TCP4:{address}:15173"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('pcap-viewer')}", f"TCP4:{address}:15174"),
+            (f"TCP4-LISTEN:55000,bind={address}", "TCP4:127.0.0.1:55000"),
+            (f"TCP4-LISTEN:8091,bind={address}", "TCP4:127.0.0.1:8091"),
+            (f"TCP4-LISTEN:15175,bind={address}", "TCP4:127.0.0.1:15175"),
             ("OPENSSL-LISTEN:15173", f"TCP4:127.0.0.1:{SPIDER_FRONTEND_PORT}"),
             ("OPENSSL-LISTEN:15174", f"TCP4:127.0.0.1:{PCAP_VIEWER_PORT}"),
         )
         return any(listener in command and target in command for listener, target in pairs)
+
+    def _migrate_internal_endpoints(self) -> None:
+        """Refresh generated endpoints from the stable workspace identity."""
+        env = self.state / "state.env"
+        try:
+            lines = env.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        generated = {
+            "SMITHPROXY_API_URL": f"https://{self.runtime.namespace_address}:55580",
+            "SMITHPROXY_CONNECT_URL": f"http://{self.runtime.namespace_address}:33128",
+            "SMITHPROXY_CALLBACK_URL": "http://127.0.0.1:18080/webhook",
+            "SMITHPROXY_CLI": f"{self.runtime.namespace_address}:55000",
+        }
+        updated = []
+        seen = set()
+        for line in lines:
+            key = line.partition("=")[0]
+            if key in generated:
+                updated.append(f"{key}={generated[key]}")
+                seen.add(key)
+            else:
+                updated.append(line)
+        updated.extend(f"{key}={value}" for key, value in generated.items() if key not in seen)
+        if lines and updated != lines:
+            env.write_text("\n".join(updated) + "\n", encoding="utf-8")
+            print(f"Workspace runtime: aktualizuji endpointy v {env}.")
+
+        config = self.state / "smithproxy.cfg"
+        try:
+            original = config.read_text(encoding="utf-8")
+        except OSError:
+            return
+        migrated = re.sub(r'(\bsift_url\s*=\s*)"[^"]+"',
+                          r'\1"http://127.0.0.1:18081/webhook"', original, count=1)
+        if migrated != original:
+            config.write_text(migrated, encoding="utf-8")
+            print(f"Workspace runtime: aktualizuji interní callback v {config}.")
 
     def _saslik_runtime_command(self, command: str) -> bool:
         executables = (
@@ -427,7 +526,7 @@ class SystemdComponents:
             owner = self.lab.stat()
             os.chown(component.log, owner.st_uid, owner.st_gid)
         component.log.chmod(0o640)
-        unit = unit_name(self.instance, component.name)
+        unit = self.runtime.unit_name(component.name)
         _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
         command = [
             "systemd-run", "--quiet", "--collect", "--service-type=exec",
@@ -500,6 +599,7 @@ class SystemdComponents:
     def up(self) -> None:
         self._check_assets()
         self.state.mkdir(parents=True, exist_ok=True)
+        self._migrate_internal_endpoints()
         components = self.components()
         components, runtime_commands = self._preflight_licenses(
             components, skip_unlicensed=True)
@@ -508,8 +608,8 @@ class SystemdComponents:
         try:
             for component in components:
                 self._start_component(component, runtime_commands[component.name])
-                if component.name == "pcap-storage":
-                    self._wait_storage_ready()
+            if "pcap-storage" in {component.name for component in components}:
+                self._wait_storage_ready()
             self._wait_ready({component.name for component in components})
             self.print_endpoints()
         except Exception:
@@ -521,7 +621,7 @@ class SystemdComponents:
         # fork children and any component descendants disappear as well.
         _run(["systemctl", "stop", self.slice_name], tolerate=True, quiet=True)
         for component in self.components_if_configured():
-            unit = unit_name(self.instance, component.name)
+            unit = self.runtime.unit_name(component.name)
             _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
             _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
         self._stop_stale_forwarders()
@@ -531,10 +631,12 @@ class SystemdComponents:
     def component_group(component: str) -> tuple[str, ...]:
         groups = {
             "smithproxy": ("smithproxy",),
-            "spider": ("spider", "frontend", "frontend-tls"),
-            "sift": ("sift",),
-            "lored": ("lored",),
-            "pcap-viewer": ("pcap-storage", "pcap-viewer", "pcap-viewer-tls"),
+            "spider": ("spider", "spider-tls", "frontend", "frontend-tls",
+                       "expose-spider", "expose-frontend"),
+            "sift": ("sift", "expose-sift"),
+            "lored": ("lored", "lored-bridge", "expose-lored"),
+            "pcap-viewer": ("pcap-storage", "pcap-storage-bridge", "expose-pcap-storage",
+                            "pcap-viewer", "pcap-viewer-tls", "expose-pcap-viewer"),
         }
         try:
             return groups[component]
@@ -546,10 +648,10 @@ class SystemdComponents:
         if component == "tuntom":
             # The guardian releases leases first. This also handles CLI use
             # and orphaned endpoints without touching other lab services.
-            _run(["systemctl", "stop", unit_name(self.instance, "tuntom-*")])
+            _run(["systemctl", "stop", self.runtime.unit_name("tuntom-*")])
             return
         for name in reversed(self.component_group(component)):
-            unit = unit_name(self.instance, name)
+            unit = self.runtime.unit_name(name)
             _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
             _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
 
@@ -571,27 +673,19 @@ class SystemdComponents:
         self.stop_component(component)
         for item in components:
             self._start_component(item, runtime_commands[item.name])
-            if item.name == "pcap-storage":
-                self._wait_storage_ready()
+        if "pcap-storage" in selected:
+            self._wait_storage_ready()
 
     def components_if_configured(self) -> list[Component]:
         try:
             return self.components()
         except (OSError, KeyError):
-            names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                     "frontend-tls", "pcap-storage", "pcap-viewer", "pcap-viewer-tls",
-                     "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
-            if self.devel:
-                names += ("lored",)
-            return [Component(name, (), self.state / f"{name}.log") for name in names]
+            return [Component(name, (), self.state / f"{name}.log")
+                    for name in self.component_names()]
 
     def status(self) -> dict[str, dict[str, str | int | None]]:
-        names = ("smithproxy", "cli-forward", "sift", "spider", "frontend",
-                 "frontend-tls", "pcap-storage", "pcap-viewer", "pcap-viewer-tls",
-                 "expose-api", "expose-proxy", "expose-cli", "e2e-probe")
-        if self.devel:
-            names += ("lored",)
-        units = {unit_name(self.instance, name): name for name in names}
+        units = {self.runtime.unit_name(name): name
+                 for name in self.component_names()}
         output = _capture([
             "systemctl", "show", *units,
             "--property=Id,ActiveState,SubState,MainPID,ExecMainStatus",
@@ -623,14 +717,15 @@ class SystemdComponents:
         values = _state_env(self.lab)
         checks = [(values["SMITHPROXY_API_URL"] + "/api/status/ping",
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
-        checks.append(("http://127.0.0.1:18080/api/health", {}, False))
-        checks.append(("http://127.0.0.1:18081/api/health", {}, False))
-        checks.append(("https://127.0.0.1:15173/", {}, True))
+        checks.append((f"https://127.0.0.1:{self.runtime.public_port('spider')}/api/health", {}, True))
+        checks.append((f"http://127.0.0.1:{self.runtime.public_port('sift')}/api/health", {}, False))
+        checks.append((f"https://127.0.0.1:{self.runtime.public_port('frontend')}/", {}, True))
         if "lored" in running_components:
-            checks.append(("http://127.0.0.1:8091/readyz", {}, False))
+            checks.append((f"http://127.0.0.1:{self.runtime.public_port('lored')}/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            checks.append((f"http://127.0.0.1:{PCAP_VIEWER_PORT}/readyz", {}, False))
-            checks.append(("https://127.0.0.1:15174/readyz", {}, True))
+            # Exercise the real path.  Viewer binds the workspace loopback;
+            # the namespace TLS relay is the only intentional ingress.
+            checks.append((f"https://127.0.0.1:{self.runtime.public_port('pcap-viewer')}/readyz", {}, True))
         pending = list(checks)
         deadline = time.monotonic() + 30
         while pending and time.monotonic() < deadline:
@@ -661,19 +756,21 @@ class SystemdComponents:
         while time.monotonic() < deadline:
             try:
                 import socket
-                with socket.create_connection(("127.0.0.1", 55000), timeout=0.5):
+                with socket.create_connection(
+                        (self.runtime.namespace_address, 55000), timeout=0.5):
                     return
             except OSError:
                 time.sleep(0.15)
         self.down()
-        raise RuntimeError("Komponenty nenaběhly: Smithproxy CLI 127.0.0.1:55000")
+        raise RuntimeError(
+            f"Komponenty nenaběhly: Smithproxy CLI {self.runtime.namespace_address}:55000")
 
     def _wait_storage_ready(self) -> None:
         token = (self.state / "pcap-viewer/storage.token").read_text(encoding="ascii").strip()
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             request = urllib.request.Request(
-                "http://127.0.0.1:15175/readyz",
+                f"http://127.0.0.1:{self.runtime.public_port('pcap-storage')}/readyz",
                 headers={"Authorization": f"Bearer {token}"},
             )
             try:
@@ -686,17 +783,17 @@ class SystemdComponents:
     def print_endpoints(self) -> None:
         values = _state_env(self.lab)
         print("Smithproxy:")
-        print("  API:          https://127.0.0.1:55580")
-        print("  HTTP CONNECT: http://127.0.0.1:33128")
-        print("  CLI:          127.0.0.1:55000")
+        print(f"  API:          https://127.0.0.1:{self.runtime.public_port('api')}")
+        print(f"  HTTP CONNECT: http://127.0.0.1:{self.runtime.public_port('proxy')}")
+        print(f"  CLI:          {self.runtime.namespace_address}:55000")
         print(f"  CA:           {values['SMITHPROXY_CA_CERT']}")
         print("Spider:")
-        print("  UI:      https://127.0.0.1:15173/")
-        print("  Backend: http://127.0.0.1:18080")
-        print("  Sift:    http://127.0.0.1:18081/api/status")
+        print(f"  UI:      https://127.0.0.1:{self.runtime.public_port('frontend')}/")
+        print(f"  Backend: https://127.0.0.1:{self.runtime.public_port('spider')}")
+        print(f"  Sift:    http://127.0.0.1:{self.runtime.public_port('sift')}/api/status")
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            print("PCAP Viewer: https://127.0.0.1:15174/")
-        print(f"Logs:    journalctl -u 'saslik-{_unit_instance(self.instance)}-*'")
+            print(f"PCAP Viewer: https://127.0.0.1:{self.runtime.public_port('pcap-viewer')}/")
+        print(f"Logs:    journalctl -u '{self.runtime.prefix}-*'")
 
 
 def main(argv: list[str] | None = None) -> int:

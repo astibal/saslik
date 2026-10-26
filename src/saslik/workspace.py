@@ -588,8 +588,9 @@ def _validate_ca_pair(certificate: Path, key: Path) -> None:
 
 
 def initialize_state(lab: Path, template: str = "spider-sift", *,
+                     instance: str = "default",
                      ca_cert: Path | None = None, ca_key: Path | None = None) -> bool:
-    """Create state only for a new lab; never rewrite an existing config/CA."""
+    """Create state only for a new workspace; never rewrite existing config/CA."""
     state = lab / "state"
     config = state / "smithproxy.cfg"
     certs = state / "certs/default"
@@ -604,6 +605,8 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
     if ca_cert is not None and ca_key is not None:
         _validate_ca_pair(ca_cert, ca_key)
     state.mkdir(parents=True, exist_ok=True)
+    from .runtime import WorkspaceRuntime
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     certs.mkdir(parents=True)
     source = lab / "src/smithproxy"
     shutil.copy2(source / "etc/certs/default/sslca.json", certs / "sslca.json")
@@ -625,7 +628,8 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
         "basicConstraints=critical,CA:FALSE\n"
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
-        "subjectAltName=DNS:smithproxy-test,IP:10.254.77.2,IP:10.254.77.1\n",
+        f"subjectAltName=DNS:smithproxy-test,IP:{runtime.namespace_address},"
+        f"IP:{runtime.host_address}\n",
         encoding="ascii",
     )
     _openssl("x509", "-req", "-in", str(state / "server.csr"), "-CA",
@@ -645,11 +649,11 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
     env.write_text(
         f"SMITHPROXY_API_KEY={api_key}\n"
         f"SPIDER_TOKEN={spider_token}\n"
-        "SMITHPROXY_API_URL=https://10.254.77.2:55580\n"
-        "SMITHPROXY_CONNECT_URL=http://10.254.77.2:33128\n"
-        "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n"
+        f"SMITHPROXY_API_URL=https://{runtime.namespace_address}:55580\n"
+        f"SMITHPROXY_CONNECT_URL=http://{runtime.namespace_address}:33128\n"
+        "SMITHPROXY_CALLBACK_URL=http://127.0.0.1:18080/webhook\n"
         f"SMITHPROXY_CA_CERT={certs / 'ca-cert.pem'}\n"
-        "SMITHPROXY_CLI=10.254.77.2:55000\n",
+        f"SMITHPROXY_CLI={runtime.namespace_address}:55000\n",
         encoding="utf-8",
     )
     env.chmod(0o600)
@@ -694,12 +698,12 @@ def _create_config(lab: Path, api_key: str) -> None:
     }};
     webhook = {{
         enabled = TRUE;
-        url = "http://10.254.77.1:18080/webhook";
+        url = "http://127.0.0.1:18080/webhook";
         tls_verify = FALSE;
         api_override = TRUE;
         ping_interval = 5;
         sift = TRUE;
-        sift_url = "http://10.254.77.1:18081/webhook";
+        sift_url = "http://127.0.0.1:18081/webhook";
     }};
 '''
     if "settings = {" not in text:
@@ -723,6 +727,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--component", choices=tuple(COMPONENT_SOURCES))
     parser.add_argument("--devel", action="store_true")
+    parser.add_argument("--instance", default="default")
     args = parser.parse_args(argv)
     try:
         if args.action == "sync":
@@ -742,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("Chybí --component.")
             build_component(args.lab, args.component, devel=args.devel)
         elif args.action == "init":
-            created = initialize_state(args.lab, args.template,
+            created = initialize_state(args.lab, args.template, instance=args.instance,
                                        ca_cert=args.ca_cert, ca_key=args.ca_key)
             print("Nový persistentní config a CA vytvořeny." if created
                   else "Persistentní config a CA zachovány beze změny.")

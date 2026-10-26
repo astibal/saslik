@@ -24,11 +24,11 @@ class ProbeTests(unittest.TestCase):
         run.return_value.returncode = 0
         run.return_value.stdout = "200"
         run.return_value.stderr = ""
-        result = proxy_probe("https://example.com/", "socks5h://10.254.78.1:1080",
+        result = proxy_probe("https://example.com/", "socks5h://10.240.0.5:1080",
                              "SOCKS5", insecure=True)
         command = run.call_args.args[0]
         self.assertEqual("ok", result["state"])
-        self.assertEqual("socks5h://10.254.78.1:1080",
+        self.assertEqual("socks5h://10.240.0.5:1080",
                          command[command.index("--proxy") + 1])
         self.assertIn("--insecure", command)
 

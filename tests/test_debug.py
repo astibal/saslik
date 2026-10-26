@@ -9,7 +9,7 @@ from saslik.debug import (component_binary, debug_unit, gdb_client_arguments,
 
 class DebugTests(unittest.TestCase):
     def test_debug_unit_is_stable(self):
-        self.assertEqual("saslik-lab-1-gdb-smithproxy.service",
+        self.assertEqual("ws-001-gdb-smithproxy.service",
                          debug_unit("lab.1", "smithproxy"))
 
     def test_component_binary_requires_existing_workspace_file(self):

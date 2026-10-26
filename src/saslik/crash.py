@@ -115,8 +115,8 @@ def collect(lab: Path, component: str, unit: str, pid: int | None = None,
 def diagnose_smithproxy(lab: Path, instance: str, signal_number: int) -> Path:
     if signal_number not in {signals.SIGKILL, signals.SIGSEGV}:
         raise ValueError("Only SIGKILL and SIGSEGV are supported.")
-    from .components import unit_name
-    unit = unit_name(instance, "smithproxy")
+    from .runtime import WorkspaceRuntime
+    unit = WorkspaceRuntime.for_workspace(lab, instance).unit_name("smithproxy")
     show = _run(["systemctl", "show", unit, "--property=MainPID", "--value"], timeout=10).strip()
     if not show.isdigit() or int(show) <= 0:
         raise RuntimeError("Smithproxy is not running.")

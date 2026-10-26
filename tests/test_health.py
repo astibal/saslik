@@ -2,22 +2,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-from saslik.health import _json_check, interface_counters
+from saslik.health import _json_check, collect, interface_counters
 
 
 class HealthTests(unittest.TestCase):
     def test_interface_counters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            stats = root / "sxp-test0/statistics"
+            stats = root / "ws001h/statistics"
             stats.mkdir(parents=True)
             names = ("rx_bytes", "rx_packets", "rx_errors", "rx_dropped",
                      "tx_bytes", "tx_packets", "tx_errors", "tx_dropped")
             for index, name in enumerate(names, 1):
                 (stats / name).write_text(str(index), encoding="ascii")
-            result = interface_counters(sysfs=root)
+            result = interface_counters("ws001h", sysfs=root)
             self.assertTrue(result["available"])
             self.assertEqual(1, result["rx_bytes"])
             self.assertEqual(8, result["tx_dropped"])
@@ -25,8 +25,8 @@ class HealthTests(unittest.TestCase):
     def test_missing_interface_is_normal(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(
-                {"available": False, "interface": "sxp-test0"},
-                interface_counters(sysfs=Path(directory)),
+                {"available": False, "interface": "ws001h"},
+                interface_counters("ws001h", sysfs=Path(directory)),
             )
 
     def test_json_check_returns_diagnostic_snapshot(self):
@@ -64,6 +64,18 @@ class HealthTests(unittest.TestCase):
             check, payload = _json_check("http://127.0.0.1/api/diagnostics")
         self.assertEqual("degraded", check["state"])
         self.assertEqual({}, payload)
+
+    @patch("saslik.health._json_check", return_value=({"state": "ok"}, {}))
+    @patch("saslik.health._http_check", return_value={"state": "ok"})
+    @patch("saslik.health._tcp_check", return_value={"state": "ok"})
+    def test_cli_health_uses_workspace_address(self, tcp_check, _http, _json):
+        with tempfile.TemporaryDirectory() as directory:
+            collect(Path(directory), namespace_address="10.240.0.42")
+
+        self.assertIn(
+            call("10.240.0.42", 55000),
+            tcp_check.call_args_list,
+        )
 
 
 if __name__ == "__main__":

@@ -148,15 +148,16 @@ def tls_issuer(name: str, address: str, ca_certificate: Path) -> dict[str, objec
                 "latency_ms": round((time.perf_counter() - started) * 1000)}
 
 
-def run_once(name: str, resolver: str, ca_certificate: Path) -> dict[str, object]:
+def run_once(name: str, resolver: str, ca_certificate: Path,
+             gateway: str = "10.240.0.5") -> dict[str, object]:
     dns, addresses = dns_probe(name, resolver)
     if addresses:
         address = addresses[0]
         http = curl_probe(f"http://{name}/", name, address)
         tls = curl_probe(f"https://{name}/", name, address, insecure=True)
-        http_connect = proxy_probe(f"https://{name}/", "http://10.254.78.1:33128",
+        http_connect = proxy_probe(f"https://{name}/", f"http://{gateway}:33128",
                                    "CONNECT", insecure=True)
-        socks = proxy_probe(f"https://{name}/", "socks5h://10.254.78.1:1080",
+        socks = proxy_probe(f"https://{name}/", f"socks5h://{gateway}:1080",
                             "SOCKS5", insecure=True)
         issuer = tls_issuer(name, address, ca_certificate) if tls["state"] == "ok" else {
             "state": "down", "detail": "TLS spojení neprošlo", "intercepted": False}
@@ -185,12 +186,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ca", required=True, type=Path)
     parser.add_argument("--target", default="example.com")
     parser.add_argument("--resolver", default="1.1.1.1")
+    parser.add_argument("--gateway", default="10.240.0.5")
     parser.add_argument("--interval", type=float, default=15)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     while True:
         try:
-            result = run_once(args.target, args.resolver, args.ca)
+            result = run_once(args.target, args.resolver, args.ca, args.gateway)
         except Exception as exc:  # Keep the monitor alive and make failure visible.
             result = {"sampled_at": time.time(), "target": args.target,
                       "checks": {}, "error": str(exc)[:200]}

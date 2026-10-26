@@ -92,7 +92,7 @@ def _tcp_check(host: str, port: int) -> dict[str, object]:
                 "latency_ms": round((time.perf_counter() - started) * 1000)}
 
 
-def interface_counters(interface: str = "sxp-test0", *, sysfs: Path = Path("/sys/class/net")) -> dict[str, object]:
+def interface_counters(interface: str = "ws001h", *, sysfs: Path = Path("/sys/class/net")) -> dict[str, object]:
     statistics = sysfs / interface / "statistics"
     names = ("rx_bytes", "rx_packets", "rx_errors", "rx_dropped",
              "tx_bytes", "tx_packets", "tx_errors", "tx_dropped")
@@ -117,35 +117,49 @@ def end_to_end_status(lab: Path) -> dict[str, object]:
     return {"available": True, "stale": stale, **value}
 
 
-def collect(lab: Path, *, include_lored: bool = False) -> dict[str, object]:
+def collect(lab: Path, *, include_lored: bool = False,
+            host_interface: str = "ws001h",
+            namespace_address: str = "10.240.0.2",
+            public_ports: dict[str, int] | None = None) -> dict[str, object]:
+    ports = public_ports or {
+        "api": 55580, "proxy": 33128, "spider": 18080, "sift": 18081,
+        "lored": 8091, "pcap-storage": 15175, "pcap-viewer": 15174,
+    }
     values = _state_env(lab)
     api_key = values.get("SMITHPROXY_API_KEY", "")
     checks = {
         "smithproxy": lambda: _http_check(
-            "https://127.0.0.1:55580/api/status/ping",
+            f"https://127.0.0.1:{ports['api']}/api/status/ping",
             {"X-API-Key": api_key} if api_key else {}, True),
-        "http_proxy": lambda: _tcp_check("127.0.0.1", 33128),
-        "socks": lambda: _tcp_check("10.254.77.2", 1080),
-        "cli": lambda: _tcp_check("127.0.0.1", 55000),
-        "spider": lambda: _http_check("http://127.0.0.1:18080/api/health"),
+        "http_proxy": lambda: _tcp_check("127.0.0.1", ports["proxy"]),
+        "socks": lambda: _tcp_check(namespace_address, 1080),
+        # The raw CLI is intentionally not exposed on the host. The portal
+        # reaches the workspace-scoped relay directly, and health must verify
+        # that same path instead of probing a removed localhost listener.
+        "cli": lambda: _tcp_check(namespace_address, 55000),
+        "spider": lambda: _http_check(
+            f"https://127.0.0.1:{ports['spider']}/api/health", insecure=True),
     }
     if include_lored and (lab / "build/lore/lored/lored").is_file():
-        checks["lored"] = lambda: _http_check("http://127.0.0.1:8091/readyz")
+        checks["lored"] = lambda: _http_check(
+            f"http://127.0.0.1:{ports['lored']}/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-        checks["pcap_viewer"] = lambda: _http_check("http://127.0.0.1:25174/readyz")
+        checks["pcap_viewer"] = lambda: _http_check(
+            f"https://127.0.0.1:{ports['pcap-viewer']}/readyz", insecure=True)
         try:
             storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
                 encoding="ascii").strip()
         except OSError:
             storage_token = ""
         checks["pcap_storage"] = lambda: _http_check(
-            "http://127.0.0.1:15175/readyz",
+            f"http://127.0.0.1:{ports['pcap-storage']}/readyz",
             {"Authorization": f"Bearer {storage_token}"} if storage_token else {})
     snapshots = {
         "listener_stats": lambda: _json_check(
-            "https://127.0.0.1:55580/api/diag/proxy/listener/stats",
+            f"https://127.0.0.1:{ports['api']}/api/diag/proxy/listener/stats",
             {"X-API-Key": api_key} if api_key else {}, True),
-        "sift_stats": lambda: _json_check("http://127.0.0.1:18081/api/diagnostics"),
+        "sift_stats": lambda: _json_check(
+            f"http://127.0.0.1:{ports['sift']}/api/diagnostics"),
     }
     with ThreadPoolExecutor(max_workers=len(checks) + len(snapshots),
                             thread_name_prefix="saslik-health") as pool:
@@ -155,7 +169,7 @@ def collect(lab: Path, *, include_lored: bool = False) -> dict[str, object]:
         results = {name: future.result() for name, future in futures.items()}
         values = {name: future.result() for name, future in snapshot_futures.items()}
     results["sift"] = values["sift_stats"][0]
-    return {"checks": results, "traffic": interface_counters(),
+    return {"checks": results, "traffic": interface_counters(host_interface),
             "listener_stats": values["listener_stats"][1],
             "sift_stats": values["sift_stats"][1],
             "end_to_end": end_to_end_status(lab), "sampled_at": time.time()}

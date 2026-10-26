@@ -67,3 +67,13 @@ class SupervisorTests(unittest.TestCase):
                 self.supervisor.request(self.target, payload)
         for backend in self.backends:
             backend.start.assert_not_called()
+
+    def test_workspaces_share_host_wide_endpoint_slots(self):
+        first = self.open("client-one")
+        second_target = (Path("/tmp/other-lab"), "other", "127.0.0.1")
+        second = self.supervisor.request(second_target, {
+            "action": "tunnel-open", "peer": "client-two", "psk": bytes(32).hex(),
+        })
+
+        self.assertNotEqual(first["tunnel"]["port"], second["tunnel"]["port"])
+        self.assertEqual({1, 2}, self.supervisor.slots)

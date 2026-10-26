@@ -66,7 +66,7 @@ class TunnelLeases:
     """
 
     def __init__(self, stop: Callable[[TunnelLease], None], *, pool="10.253.0.0/22",
-                 ttl=60, clock=time.monotonic):
+                 ttl=60, clock=time.monotonic, acquire_slot=None, release_slot=None):
         network = ipaddress.IPv4Network(pool)
         if not network.subnet_of(ipaddress.IPv4Network("10.0.0.0/8")) or network.prefixlen > 22:
             raise ValueError("Tunnel pool must contain 256 /30s inside 10/8")
@@ -75,6 +75,8 @@ class TunnelLeases:
         self.pool, self.ttl, self.clock, self.stop = str(network), ttl, clock, stop
         self.leases: dict[str, TunnelLease] = {}
         self.lock = threading.RLock()
+        self.acquire_slot = acquire_slot
+        self.release_slot = release_slot
 
     def acquire(self, peer: str) -> TunnelLease:
         if not peer or len(peer) > 128:
@@ -86,7 +88,8 @@ class TunnelLeases:
                 lease.deadline = self.clock() + self.ttl
                 return lease
             occupied = {lease.slot for lease in self.leases.values()}
-            slot = next((i for i in range(1, 256) if i not in occupied), None)
+            slot = (self.acquire_slot() if self.acquire_slot else
+                    next((i for i in range(1, 256) if i not in occupied), None))
             if slot is None:
                 raise ValueError("No free tuntom endpoints")
             lease = TunnelLease(peer, slot, secrets.token_hex(32), self.clock() + self.ttl, self.pool)
@@ -100,6 +103,8 @@ class TunnelLeases:
                 lease.ready = False
                 self.stop(lease)  # Failure keeps the reservation; never reuse a live endpoint.
                 del self.leases[peer]
+                if self.release_slot:
+                    self.release_slot(lease.slot)
 
     def expire(self) -> None:
         with self.lock:

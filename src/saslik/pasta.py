@@ -7,20 +7,18 @@ import subprocess
 import time
 from pathlib import Path
 
+from .runtime import WorkspaceRuntime
 
-NAMESPACE = "sxp-test"
-HOST_IF = "sxp-test0"
-NS_ADDR = "10.254.77.2"
+
 IP_FORWARD = Path("/proc/sys/net/ipv4/ip_forward")
-PASTA_NETNS = Path("/run/user/0/saslik/sxp-test")
 
 
 def _unit_instance(instance: str) -> str:
     return "".join(character if character.isalnum() else "-" for character in instance)
 
 
-def unit_name(instance: str) -> str:
-    return f"saslik-pasta-{_unit_instance(instance)}.service"
+def unit_name(runtime_prefix: str) -> str:
+    return f"{runtime_prefix}-pasta.service"
 
 
 def cleanup_needed(lab: Path, instance: str | None = None,
@@ -36,7 +34,8 @@ def cleanup_needed(lab: Path, instance: str | None = None,
         return True
     if not inspect_unit:
         return False
-    name = unit_name(instance or lab.name)
+    runtime = WorkspaceRuntime.for_workspace(lab, instance or lab.name)
+    name = unit_name(runtime.prefix)
     result = subprocess.run(
         ["systemctl", "is-active", "--quiet", name], check=False,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -71,46 +70,49 @@ def _restore_host(lab: Path) -> None:
         snapshot.unlink()
 
 
-def _mount_namespace_reference() -> Path:
+def _mount_namespace_reference(runtime: WorkspaceRuntime) -> Path:
     """Expose ip-netns through a path allowed by pasta's AppArmor profile."""
-    source = Path("/run/netns") / NAMESPACE
+    source = Path("/run/netns") / runtime.namespace
     if not source.exists():
-        raise RuntimeError(f"Network namespace {NAMESPACE} neexistuje.")
-    PASTA_NETNS.parent.mkdir(parents=True, exist_ok=True)
-    PASTA_NETNS.touch(exist_ok=True)
-    _run(["umount", str(PASTA_NETNS)], tolerate=True)
-    _run(["mount", "--bind", str(source), str(PASTA_NETNS)])
-    return PASTA_NETNS
+        raise RuntimeError(f"Network namespace {runtime.namespace} neexistuje.")
+    target = Path("/run/user/0/saslik") / runtime.namespace
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.touch(exist_ok=True)
+    _run(["umount", str(target)], tolerate=True)
+    _run(["mount", "--bind", str(source), str(target)])
+    return target
 
 
-def _unmount_namespace_reference() -> None:
+def _unmount_namespace_reference(runtime: WorkspaceRuntime) -> None:
+    target = Path("/run/user/0/saslik") / runtime.namespace
     # Failed retries may have stacked more than one bind mount on the same
     # path. Peel every layer instead of assuming a single umount is enough.
     for _ in range(16):
         result = subprocess.run(
-            ["umount", str(PASTA_NETNS)], check=False,
+            ["umount", str(target)], check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         if result.returncode:
             break
     subprocess.run(
-        ["umount", "-l", str(PASTA_NETNS)], check=False,
+        ["umount", "-l", str(target)], check=False,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        PASTA_NETNS.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
     except OSError as exc:
         raise RuntimeError(f"Nelze uklidit starou pasta namespace reference: {exc}") from exc
 
 
 def pasta_up(lab: Path, instance: str) -> None:
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     binary = shutil.which("pasta")
     if not binary:
         raise RuntimeError("Pasta není nainstalovaná. Na Ubuntu/Debian použij: sudo apt install passt")
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
     pasta_down(lab, instance)
-    namespace = _mount_namespace_reference()
+    namespace = _mount_namespace_reference(runtime)
     command = [
         binary, "--foreground", "--runas", "0", "--netns", str(namespace),
         "--netns-only", "--config-net",
@@ -121,7 +123,7 @@ def pasta_up(lab: Path, instance: str) -> None:
     try:
         _run([
             "systemd-run", "--no-ask-password", "--quiet", "--collect", "--service-type=exec",
-            f"--unit={unit_name(instance)}", "--slice=saslik-egress.slice",
+            f"--unit={unit_name(runtime.prefix)}", f"--slice={runtime.slice_name}",
             "--property=KillMode=control-group", "--property=Restart=on-failure",
             "--property=RestartSec=500ms",
             f"--property=StandardOutput=append:{state / 'pasta.log'}",
@@ -131,7 +133,7 @@ def pasta_up(lab: Path, instance: str) -> None:
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             result = subprocess.run(
-                ["ip", "-n", NAMESPACE, "link", "show", "saslik-out"],
+                ["ip", "-n", runtime.namespace, "link", "show", "saslik-out"],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             if result.returncode == 0:
@@ -140,30 +142,33 @@ def pasta_up(lab: Path, instance: str) -> None:
         else:
             raise RuntimeError("Pasta nevytvořila namespace interface saslik-out.")
     except Exception:
-        _run(["systemctl", "--no-ask-password", "stop", unit_name(instance)], tolerate=True)
-        _unmount_namespace_reference()
+        _run(["systemctl", "--no-ask-password", "stop", unit_name(runtime.prefix)], tolerate=True)
+        _unmount_namespace_reference(runtime)
         raise
 
     # Pasta owns the namespace default route. Keep the ingress veth for host
     # access, but remove the temporary NAT/forwarding installed by the reused
     # Spider runner. Every deletion is the exact inverse of its known rule.
-    _run(["ip", "-n", NAMESPACE, "route", "del", "default", "via", "10.254.77.1"], tolerate=True)
-    _run(["iptables", "-t", "nat", "-D", "POSTROUTING", "-s", f"{NS_ADDR}/32", "-j", "MASQUERADE"], tolerate=True)
+    _run(["ip", "-n", runtime.namespace, "route", "del", "default", "via",
+          runtime.host_address], tolerate=True)
+    _run(["iptables", "-t", "nat", "-D", "POSTROUTING", "-s",
+          f"{runtime.namespace_address}/32", "-j", "MASQUERADE"], tolerate=True)
     for port in ("55580", "33128", "55000"):
         _run(["iptables", "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "--dport", port,
-              "-j", "DNAT", "--to-destination", f"{NS_ADDR}:{port}"], tolerate=True)
-    _run(["iptables", "-D", "FORWARD", "-i", HOST_IF, "-j", "ACCEPT"], tolerate=True)
-    _run(["iptables", "-D", "FORWARD", "-o", HOST_IF, "-m", "conntrack", "--ctstate",
+              "-j", "DNAT", "--to-destination", f"{runtime.namespace_address}:{port}"], tolerate=True)
+    _run(["iptables", "-D", "FORWARD", "-i", runtime.host_interface, "-j", "ACCEPT"], tolerate=True)
+    _run(["iptables", "-D", "FORWARD", "-o", runtime.host_interface, "-m", "conntrack", "--ctstate",
           "RELATED,ESTABLISHED", "-j", "ACCEPT"], tolerate=True)
     # Native Saslik networking owns a dedicated nftables table instead of
     # adding global iptables rules. Pasta is the egress owner in this mode.
-    _run(["nft", "delete", "table", "ip", "saslik_lab"], tolerate=True)
+    _run(["nft", "delete", "table", "ip", runtime.network_nft_table], tolerate=True)
     _restore_host(lab)
     (state / "egress").write_text("pasta\n", encoding="ascii")
 
 
 def pasta_down(lab: Path, instance: str | None = None) -> None:
     instance = instance or lab.name
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     # NAT workspaces must not issue a mutating systemd operation for a pasta
     # unit they never owned. Besides being needless, a non-root caller may
     # otherwise provoke a desktop polkit authorization dialog.
@@ -172,8 +177,8 @@ def pasta_down(lab: Path, instance: str | None = None) -> None:
     # Never let an accidentally unprivileged cleanup fall back to a desktop
     # polkit prompt. Normal lifecycle calls arrive through sudo or the root
     # guardian; an unprivileged caller should fail quietly, not steal focus.
-    _run(["systemctl", "--no-ask-password", "stop", unit_name(instance)], tolerate=True)
-    _run(["systemctl", "--no-ask-password", "reset-failed", unit_name(instance)], tolerate=True)
+    _run(["systemctl", "--no-ask-password", "stop", unit_name(runtime.prefix)], tolerate=True)
+    _run(["systemctl", "--no-ask-password", "reset-failed", unit_name(runtime.prefix)], tolerate=True)
     # One-way cleanup of pasta processes created before systemd ownership.
     pid_file = lab / "state/pasta.pid"
     if pid_file.is_file():
@@ -185,7 +190,7 @@ def pasta_down(lab: Path, instance: str | None = None) -> None:
         except (ValueError, ProcessLookupError, PermissionError):
             pass
         pid_file.unlink(missing_ok=True)
-    _unmount_namespace_reference()
+    _unmount_namespace_reference(runtime)
     (lab / "state/egress").unlink(missing_ok=True)
     _restore_host(lab)
 
@@ -208,3 +213,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    target = Path("/run/user/0/saslik") / runtime.namespace

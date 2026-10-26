@@ -54,7 +54,7 @@ class CrashReportTests(unittest.TestCase):
             (state / "messages.default.log.crashlog.log").write_text(
                 "native backtrace", encoding="utf-8")
             with patch.dict("os.environ", {"SERVICE_RESULT": "signal", "MAINPID": "4242"}):
-                report = collect(lab, "smithproxy", "saslik-lab1-smithproxy.service")
+                report = collect(lab, "smithproxy", "ws-001-smithproxy.service")
             self.assertIsNotNone(report)
             self.assertIn("No matching coredump", report.read_text(encoding="utf-8"))
             siblings = {path.name for path in report.parent.iterdir()}

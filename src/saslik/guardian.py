@@ -18,17 +18,19 @@ from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
 from .tuntom_supervisor import TunnelSupervisor
 from .maintenance import maintain_component_logs, repair_log_ownership
+from .runtime import WorkspaceRuntime
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
 
 
 def cleanup(lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     SystemdComponents(lab, instance, expose_address, devel=devel).down()
-    routing_down()
+    routing_down(runtime)
     pasta_down(lab, instance)
-    network_down(lab)
-    dns_down(lab)
+    network_down(lab, runtime)
+    dns_down(lab, runtime)
 
 
 def parent_alive(pid: int) -> bool:
@@ -50,7 +52,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
     listener.listen(4)
     listener.setblocking(False)
     root = data_root.resolve()
-    last_target: tuple[Path, str, str] | None = (lab.resolve(), instance, expose_address)
+    targets: set[tuple[Path, str, str]] = {(lab.resolve(), instance, expose_address)}
     tunnels = TunnelSupervisor()
     next_expiration = 0.0
     try:
@@ -81,7 +83,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     if not lab.is_relative_to(root):
                         raise RuntimeError("Workspace je mimo Saslik data root.")
                     target = (lab, str(payload["instance"]), str(payload["expose_address"]))
-                    last_target = target
+                    targets.add(target)
                     response = {"ok": True}
                     if payload.get("action") == "stop":
                         tunnels.close(target)
@@ -94,7 +96,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     elif payload.get("action") == "gdb-start":
                         start_gdbserver(*target, str(payload.get("component", "")))
                     elif payload.get("action") == "gdb-stop":
-                        stop_gdbserver(str(payload["instance"]),
+                        stop_gdbserver(lab, str(payload["instance"]),
                                        str(payload.get("component", "")))
                     elif payload.get("action") in {"component-stop", "component-restart"}:
                         component = str(payload.get("component", ""))
@@ -127,9 +129,9 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
         except Exception:
             logging.error("Tunnel cleanup incomplete during guardian shutdown")
             # Component-slice cleanup below remains the final fallback.
-        if last_target is not None:
+        for target in targets:
             try:
-                cleanup(*last_target, devel=devel)
+                cleanup(*target, devel=devel)
             except Exception:
                 pass
         listener.close()

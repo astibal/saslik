@@ -1,11 +1,13 @@
+import base64
 import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
-                           app_launch_command, normalize_skewer_report,
-                           fetch_skewer_deb, open_frontend, skewer_discovery,
+                           normalize_skewer_report,
+                           pairing_qr_data_url,
+                           fetch_skewer_deb, skewer_discovery,
                            web_log_tail)
 
 
@@ -83,6 +85,9 @@ class SpiderBootstrapTests(unittest.TestCase):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_portal_uses_persistent_http_connections(self):
+        self.assertEqual("HTTP/1.1", Handler.protocol_version)
+
     def test_json_ignores_browser_disconnect_during_write(self):
         handler = object.__new__(Handler)
         handler.send_response = MagicMock()
@@ -94,18 +99,25 @@ class ResponseTests(unittest.TestCase):
 
 
 class SkewerDiscoveryTests(unittest.TestCase):
+    def test_pairing_qr_is_embedded_svg(self):
+        value = pairing_qr_data_url("skewer://connect?psk=secret")
+
+        prefix = "data:image/svg+xml;base64,"
+        self.assertTrue(value.startswith(prefix))
+        self.assertIn(b"<svg", base64.b64decode(value.removeprefix(prefix)))
+
     def test_interface_ifindex_is_a_reconnect_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            interface = root / "sxp-test0"
+            interface = root / "ws001h"
             interface.mkdir()
             (interface / "ifindex").write_text("846\n", encoding="ascii")
 
             value = skewer_discovery("lab1", root)
 
             self.assertTrue(value["available"])
-            self.assertEqual("10.254.77.2", value["gateway"])
-            self.assertEqual("sxp-test0", value["host_interface"])
+            self.assertEqual("10.240.0.2", value["gateway"])
+            self.assertEqual("ws001h", value["host_interface"])
             self.assertEqual("846", value["generation"])
 
     def test_missing_interface_reports_unavailable(self):
@@ -168,34 +180,6 @@ class SkewerDiscoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_skewer_report({"version": 1, "hostname": "<script>",
                                      "ca": {"stores": []}})
-
-
-class FrontendTests(unittest.TestCase):
-    @patch("saslik.server.shutil.which")
-    def test_app_command_uses_available_browser_without_launching_it(self, which):
-        which.side_effect = lambda name: "/snap/bin/brave" if name == "brave-browser" else None
-        self.assertEqual("/snap/bin/brave --app=http://127.0.0.1:8765/",
-                         app_launch_command("http://127.0.0.1:8765/"))
-
-    @patch("saslik.server.subprocess.Popen")
-    @patch("saslik.server.shutil.which")
-    def test_app_mode_uses_first_available_chromium_browser(self, which, popen):
-        which.side_effect = lambda name: "/usr/bin/google-chrome" if name == "google-chrome" else None
-        self.assertEqual("google-chrome", open_frontend("http://127.0.0.1:8765/"))
-        command = popen.call_args.args[0]
-        self.assertEqual("/usr/bin/google-chrome", command[0])
-        self.assertEqual("--app=http://127.0.0.1:8765/", command[1])
-
-    @patch("saslik.server.webbrowser.open")
-    @patch("saslik.server.shutil.which", return_value=None)
-    def test_app_mode_falls_back_to_default_browser(self, _which, browser_open):
-        self.assertEqual("browser", open_frontend("http://127.0.0.1:8765/"))
-        browser_open.assert_called_once()
-
-    @patch("saslik.server.webbrowser.open")
-    def test_no_browser_opens_nothing(self, browser_open):
-        self.assertEqual("none", open_frontend("http://127.0.0.1:8765/", "none"))
-        browser_open.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.runner import Job, LabRunner, ensure_friendly_data_link, parse_endpoints, runtime_state, validate_ref
+from saslik.runtime import WorkspaceRuntime
 
 
 class RunnerTests(unittest.TestCase):
@@ -53,14 +54,36 @@ class RunnerTests(unittest.TestCase):
     def test_endpoint_parser(self):
         result = parse_endpoints([
             "Spider:", "  UI:      https://helmut:15173/", "  Token:   secret",
-            "  HTTP CONNECT: http://10.254.77.2:33128", "  CLI: 10.254.77.2:55000",
+            "  Backend: https://helmut:18080",
+            "  HTTP CONNECT: http://10.240.0.2:33128", "  CLI: 10.240.0.2:55000",
             "  PCAP Viewer: https://127.0.0.1:15174/",
         ])
         self.assertEqual("https://helmut:15173/", result["spider_ui"])
+        self.assertEqual("https://helmut:18080", result["spider_backend"])
         self.assertEqual("https://helmut:15173/test-ca.pem", result["ca_download"])
         self.assertNotIn("spider_token", result)
-        self.assertEqual("http://10.254.77.2:33128", result["proxy"])
+        self.assertEqual("http://10.240.0.2:33128", result["proxy"])
         self.assertEqual("https://127.0.0.1:15174/", result["pcap_viewer"])
+
+    @patch("saslik.runner.LabRunner._service_status", return_value={})
+    @patch("saslik.runner.LabRunner._health_status", return_value={})
+    @patch("saslik.runner.WorkspaceRuntime.for_instance",
+           return_value=WorkspaceRuntime(1))
+    def test_snapshot_reconstructs_workspace_endpoints_without_build_log(
+            self, _runtime, _health, _services):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = LabRunner(Path(directory))
+            state = runner.lab / "state"
+            state.mkdir(parents=True)
+            (state / "smithproxy.cfg").touch()
+            snapshot = runner.snapshot()
+
+        self.assertEqual("https://127.0.0.1:20000",
+                         snapshot["endpoints"]["smithproxy_api"])
+        self.assertEqual("http://127.0.0.1:20001",
+                         snapshot["endpoints"]["proxy"])
+        self.assertEqual("https://127.0.0.1:20003/",
+                         snapshot["endpoints"]["spider_ui"])
 
     def test_nat_is_default_and_does_not_start_pasta(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -131,7 +154,8 @@ class RunnerTests(unittest.TestCase):
         network_up = next(i for i, command in enumerate(joined) if "saslik.network up" in command)
         pasta_up = next(i for i, command in enumerate(joined) if "saslik.pasta up" in command)
         components_up = next(i for i, command in enumerate(joined) if "saslik.components up" in command)
-        namespace_up = next(i for i, command in enumerate(joined) if "saslik.routing namespace-up" in command)
+        namespace_up = next(i for i, command in enumerate(joined)
+                            if "saslik.routing" in command and "namespace-up" in command)
         self.assertLess(network_up, snapshot)
         self.assertLess(snapshot, pasta_up)
         self.assertLess(pasta_up, namespace_up)
