@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import base64
 import html
+import hashlib
 import ipaddress
 import io
 import mimetypes
@@ -29,7 +30,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -132,6 +133,88 @@ SKEWER_DEB_HOSTS = {
     "release-assets.githubusercontent.com",
 }
 SKEWER_DEB_MAX_BYTES = 256 * 1024 * 1024
+PUBLIC_INSTALLER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
+
+
+def public_installers(lab: Path) -> list[dict]:
+    """Describe the explicit public installer drop-in directory."""
+    root = lab / "public/installers"
+    if not root.is_dir():
+        return []
+    metadata: dict[str, dict] = {}
+    manifest = root / "manifest.json"
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        entries = document.get("installers", []) if isinstance(document, dict) else []
+        if isinstance(entries, list):
+            metadata = {entry["file"]: entry for entry in entries
+                        if isinstance(entry, dict) and isinstance(entry.get("file"), str)}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    result = []
+    for target in root.iterdir():
+        name = target.name
+        if (name == "manifest.json" or not PUBLIC_INSTALLER_NAME.fullmatch(name)
+                or target.is_symlink() or not target.is_file()):
+            continue
+        item = metadata.get(name, {})
+        title = str(item.get("title") or target.stem.replace("_", " ").replace("-", " "))[:80]
+        platform = str(item.get("platform") or target.suffix.lstrip(".").upper() or "binary")[:80]
+        description = str(item.get("description") or "Custom workspace installer")[:240]
+        channel = str(item.get("channel") or "devel")[:16]
+        if channel not in {"stable", "beta", "devel", "nightly"}:
+            channel = "devel"
+        architecture = str(item.get("architecture") or "any")[:40]
+        version = str(item.get("version") or "unversioned")[:60]
+        order = item.get("order", 1000)
+        digest = hashlib.sha256()
+        with target.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result.append({"file": name, "title": title, "platform": platform,
+                       "description": description, "channel": channel,
+                       "architecture": architecture, "version": version,
+                       "sha256": digest.hexdigest(),
+                       "url": f"/downloads/custom/{quote(name)}",
+                       "size": target.stat().st_size,
+                       "order": order if isinstance(order, (int, float)) else 1000})
+    return sorted(result, key=lambda item: (item["order"], item["title"].casefold()))
+
+
+def save_public_installer_metadata(lab: Path, filename: str, values: dict) -> None:
+    if not PUBLIC_INSTALLER_NAME.fullmatch(filename):
+        raise ValueError("Neplatný název instalátoru.")
+    root = lab / "public/installers"
+    target = root / filename
+    if target.is_symlink() or not target.is_file():
+        raise ValueError("Instalátor neexistuje.")
+    current = {item["file"]: item for item in public_installers(lab)}
+    item = current.get(filename, {"file": filename})
+    current[filename] = item
+    for key, limit in (("title", 80), ("platform", 80), ("architecture", 40),
+                       ("version", 60), ("description", 240)):
+        value = str(values.get(key, item.get(key, ""))).strip()
+        if value:
+            item[key] = value[:limit]
+    channel = str(values.get("channel", item.get("channel", "devel")))
+    if channel not in {"stable", "beta", "devel", "nightly"}:
+        raise ValueError("Neplatný release channel.")
+    item["channel"] = channel
+    item["order"] = int(values.get("order", item.get("order", 1000)))
+    write_public_installer_manifest(lab, list(current.values()))
+
+
+def write_public_installer_manifest(lab: Path, entries: list[dict]) -> None:
+    root = lab / "public/installers"
+    root.mkdir(parents=True, exist_ok=True)
+    stored = [{key: value for key, value in entry.items()
+               if key in {"file", "title", "platform", "architecture", "version",
+                          "description", "channel", "order"}}
+              for entry in entries]
+    temporary = root / ".manifest.json.tmp"
+    temporary.write_text(json.dumps({"installers": stored}, indent=2) + "\n",
+                         encoding="utf-8")
+    temporary.replace(root / "manifest.json")
 
 
 def _fetch_github_deb(url: str, label: str):
@@ -636,9 +719,43 @@ class Handler(BaseHTTPRequestHandler):
              "url": "/api/skewer", "open": False, "color": "#ff8055"},
         ))
         services = snapshot.get("services", {})
-        self._json({"items": items, "running": any(
+        downloads = [
+            {"title": "Skewer", "platform": "Linux DEB · amd64",
+             "url": "/downloads/skewer-linux-amd64.deb"},
+            {"title": "Tuntom", "platform": "Linux DEB · amd64",
+             "url": "/downloads/tuntom_amd64.deb"},
+            {"title": "Tuntom", "platform": "Linux DEB · arm64",
+             "url": "/downloads/tuntom_arm64.deb"},
+        ]
+        downloads.extend(public_installers(self.server.runner.lab))
+        self._json({"items": items, "downloads": downloads, "running": any(
             isinstance(service, dict) and service.get("state") == "running"
             for service in services.values())})
+
+    def _custom_installer_download(self, encoded_name: str) -> None:
+        try:
+            name = unquote(encoded_name)
+            if not PUBLIC_INSTALLER_NAME.fullmatch(name):
+                raise ValueError("Invalid installer name")
+            target = self.server.runner.lab / "public/installers" / name
+            if target.is_symlink() or not target.is_file():
+                raise FileNotFoundError(name)
+            content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{name}"; filename*=UTF-8\'\'{quote(name)}')
+            self.send_header("Content-Length", str(target.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with target.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except FileNotFoundError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+        except (OSError, ValueError):
+            self.send_error(HTTPStatus.BAD_REQUEST)
 
     def _login(self) -> None:
         if not self.server.portal_configured:
@@ -751,13 +868,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._connect_info()
         if path == "/connect/ca.pem":
             return self._ca()
+        if path.startswith("/downloads/custom/"):
+            return self._custom_installer_download(path.removeprefix("/downloads/custom/"))
         public_downloads = {
             "/downloads/skewer-linux-amd64.deb",
             "/downloads/tuntom-linux-amd64.deb",
             "/downloads/tuntom_amd64.deb",
             "/downloads/tuntom_arm64.deb",
         }
-        public_assets = {"/login.css", "/login-connect.css", "/connect.css", "/connect.js",
+        public_assets = {"/login.css", "/login-connect.css", "/connect.css",
+                         "/connect-custom.css", "/connect.js",
                          "/saslik-mark.svg", "/card-scenes/cli.png"}
         if path in public_assets:
             return self._asset(path)
@@ -773,6 +893,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"available": True, **licensing_report()})
             except LicensingError as exc:
                 return self._json({"available": False, "error": str(exc)})
+        if path == "/api/public-installers":
+            return self._public_installers_info(parsed.query)
         if path == "/api/logs/tail":
             source = parse_qs(parsed.query).get("source", ["saslik"])[0]
             try:
@@ -934,6 +1056,33 @@ class Handler(BaseHTTPRequestHandler):
             self._json(list_directory(lab, value))
         except (OSError, ValueError, RuntimeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _public_installers_info(self, query: str) -> None:
+        try:
+            values = parse_qs(query)
+            lab, _ = self._workspace_target(values.get("workspace", [""])[0])
+            self._json({"installers": public_installers(lab)})
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _public_installers_action(self, body: dict) -> None:
+        lab, _ = self._workspace_target(str(body.get("workspace", "")))
+        operation = str(body.get("operation", "metadata"))
+        filename = str(body.get("file", ""))
+        if not PUBLIC_INSTALLER_NAME.fullmatch(filename):
+            raise ValueError("Neplatný název instalátoru.")
+        if operation == "metadata":
+            save_public_installer_metadata(lab, filename, body)
+        elif operation == "delete":
+            target = lab / "public/installers" / filename
+            if target.is_symlink() or not target.is_file():
+                raise ValueError("Instalátor neexistuje.")
+            target.unlink()
+            write_public_installer_manifest(
+                lab, [item for item in public_installers(lab) if item["file"] != filename])
+        else:
+            raise ValueError("Neznámá operace instalátoru.")
+        self._json({"ok": True, "installers": public_installers(lab)})
 
     def _files_read(self, query: str) -> None:
         try:
@@ -1189,7 +1338,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/crashes/clear", "/api/crashes/diagnose",
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
-                        "/api/account/password"}:
+                        "/api/account/password", "/api/public-installers"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -1234,6 +1383,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._cli_write(body)
             if path == "/api/files/action":
                 return self._files_action(body)
+            if path == "/api/public-installers":
+                return self._public_installers_action(body)
             if path == "/api/dev/patch":
                 lab, _ = self._workspace_target(str(body.get("workspace", "")))
                 operation = str(body.get("operation", "apply"))

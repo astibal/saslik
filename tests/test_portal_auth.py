@@ -127,7 +127,7 @@ class PortalSessionTests(unittest.TestCase):
         self.assertEqual(401, status)
 
     def test_connect_portal_is_public_and_contains_only_unprivileged_links(self):
-        for path in ("/connect", "/connect.css", "/connect.js", "/api/connect",
+        for path in ("/connect", "/connect.css", "/connect-custom.css", "/connect.js", "/api/connect",
                      "/connect/ca.pem"):
             status, _, _ = self.request("GET", path)
             self.assertEqual(200, status, path)
@@ -143,6 +143,76 @@ class PortalSessionTests(unittest.TestCase):
 
         status, _, _ = self.request("GET", "/api/skewer/pairing")
         self.assertEqual(401, status)
+
+    def test_custom_installer_is_listed_and_downloadable_without_login(self):
+        root = self.server.runner.lab / "public/installers"
+        root.mkdir(parents=True)
+        (root / "skewer-android.apk").write_bytes(b"apk payload")
+        (root / "manifest.json").write_text(json.dumps({"installers": [{
+            "file": "skewer-android.apk", "title": "Skewer Mobile",
+            "platform": "Android APK", "description": "Android client",
+            "order": 5,
+        }]}))
+
+        status, _, payload = self.request("GET", "/api/connect")
+        self.assertEqual(200, status)
+        downloads = json.loads(payload)["downloads"]
+        custom = next(item for item in downloads if item.get("file") == "skewer-android.apk")
+        self.assertEqual("Skewer Mobile", custom["title"])
+        self.assertEqual("Android APK", custom["platform"])
+        self.assertEqual("devel", custom["channel"])
+        self.assertEqual(64, len(custom["sha256"]))
+
+        status, headers, payload = self.request("GET", custom["url"])
+        self.assertEqual(200, status)
+        self.assertEqual(b"apk payload", payload)
+        self.assertIn("attachment", headers["Content-Disposition"])
+
+    def test_custom_installer_rejects_traversal_and_symlinks(self):
+        root = self.server.runner.lab / "public/installers"
+        root.mkdir(parents=True)
+        outside = self.server.runner.lab / "private.bin"
+        outside.write_bytes(b"private")
+        (root / "escape.bin").symlink_to(outside)
+
+        status, _, _ = self.request("GET", "/downloads/custom/%2e%2e%2fprivate.bin")
+        self.assertEqual(400, status)
+        status, _, _ = self.request("GET", "/downloads/custom/escape.bin")
+        self.assertEqual(404, status)
+
+    def test_custom_installer_metadata_and_delete_require_admin_session(self):
+        root = self.server.runner.lab / "public/installers"
+        root.mkdir(parents=True)
+        (root / "client.apk").write_bytes(b"apk")
+        body = json.dumps({"operation": "metadata", "workspace": "",
+                           "file": "client.apk", "title": "Mobile client",
+                           "platform": "Android", "architecture": "arm64",
+                           "version": "1.2.3", "channel": "stable"})
+        status, _, _ = self.request("POST", "/api/public-installers", body,
+                                    {"Content-Type": "application/json",
+                                     "Content-Length": str(len(body))})
+        self.assertEqual(401, status)
+
+        cookie, _ = self.claim()
+        status, _, payload = self.request("GET", "/api/session", headers={"Cookie": cookie})
+        csrf = json.loads(payload)["csrf"]
+        status, _, payload = self.request(
+            "POST", "/api/public-installers", body,
+            {"Cookie": cookie, "Content-Type": "application/json",
+             "Content-Length": str(len(body)), "X-Saslik-CSRF": csrf})
+        self.assertEqual(200, status, payload)
+        item = json.loads(payload)["installers"][0]
+        self.assertEqual("stable", item["channel"])
+        self.assertEqual("1.2.3", item["version"])
+
+        delete = json.dumps({"operation": "delete", "workspace": "",
+                             "file": "client.apk"})
+        status, _, payload = self.request(
+            "POST", "/api/public-installers", delete,
+            {"Cookie": cookie, "Content-Type": "application/json",
+             "Content-Length": str(len(delete)), "X-Saslik-CSRF": csrf})
+        self.assertEqual(200, status, payload)
+        self.assertFalse((root / "client.apk").exists())
 
     def test_cli_and_debug_transports_require_portal_session(self):
         for method, path in (("GET", "/api/cli?session=guessed"),

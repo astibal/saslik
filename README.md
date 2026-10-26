@@ -125,6 +125,22 @@ Runtime data defaults to `~/.local/share/saslik/lab`. Override it with
 `https://github.com/astibal/smithproxy-spider.git`; override it with
 `SASLIK_SPIDER_REPOSITORY`.
 
+### Public custom installers
+
+Files placed in `<workspace>/public/installers/` are offered for download on
+the unauthenticated **Connect It** portal. Only regular files with simple ASCII
+names are published; symlinks, dotfiles and `manifest.json` are never served.
+Optional display metadata lives next to them in `manifest.json`:
+
+```json
+{"installers": [
+  {"file": "skewer-android.apk", "title": "Skewer", "platform": "Android APK", "order": 10}
+]}
+```
+
+Anything placed in this directory is intentionally public to every client that
+can reach the portal.
+
 ## Console use
 
 ```bash

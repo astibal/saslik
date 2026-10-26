@@ -128,6 +128,9 @@ class Instance:
             marker = self.data_dir / "workspace-id"
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(f"{workspace_id}\n", encoding="ascii")
+            # Every workspace exposes only this explicit drop-in directory on
+            # the unauthenticated Connect It portal.
+            (self.data_dir / "public/installers").mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def discover(cls) -> list["Instance"]:

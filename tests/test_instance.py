@@ -52,6 +52,7 @@ class InstanceTests(unittest.TestCase):
             stored = Instance.load("lab1")
             self.assertEqual(1, stored.workspace_id)
             self.assertEqual("ws-001", stored.runtime_prefix)
+            self.assertTrue((stored.data_dir / "public/installers").is_dir())
 
     def test_workspace_ids_are_stable_sequential_and_three_digit(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
