@@ -8,6 +8,15 @@ from saslik.runtime import WorkspaceRuntime
 
 
 class NetworkLifecycleTests(unittest.TestCase):
+    def test_control_ports_only_accept_the_host_gateway(self):
+        runtime = WorkspaceRuntime(7)
+
+        rules = network.network_rules(runtime)
+
+        self.assertIn(f'ip saddr {runtime.host_address} accept', rules)
+        self.assertIn('iifname "lo" accept', rules)
+        self.assertIn('tcp dport { 55580, 18080, 18081, 8091, 15173, 15174, 15175 } drop', rules)
+
     @patch("saslik.network._run")
     def test_last_workspace_restores_host_forwarding(self, _run):
         with tempfile.TemporaryDirectory() as directory:

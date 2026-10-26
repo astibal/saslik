@@ -75,7 +75,7 @@ chroot "$staging" apt-get install -y --no-install-recommends \
     libunwind-dev libmicrohttpd-dev libcurl4-openssl-dev libpam0g-dev \
     libhyperscan-dev nlohmann-json3-dev \
     swig libffi-dev libxml2-dev libxslt1-dev xmlsec1 \
-    iproute2 iptables nftables passt telnet openssl libnss3-tools \
+    iproute2 iptables nftables nginx passt telnet openssl libnss3-tools \
     tshark tcpdump jq less nano
 
 install -d -m 0755 "$staging/opt/saslik/source"

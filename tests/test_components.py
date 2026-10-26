@@ -26,7 +26,8 @@ class ComponentTests(unittest.TestCase):
             frontend = next(c for c in manager.components() if c.name == "frontend")
             self.assertEqual(frontend.command[1], str(server))
             self.assertEqual(frontend.command[2:], (
-                "25173", "--bind", "127.0.0.1", "--directory", str(lab / "state/frontend")))
+                "25173", "--bind", "127.0.0.1", "--directory", str(lab / "state/frontend"),
+                "--base-path", "/ws001/spider/", "--backend-path", "/ws001/spider-api/"))
             relay = next(c for c in manager.components() if c.name == "frontend-tls")
             self.assertIn("OPENSSL-LISTEN:15173", relay.command[1])
             self.assertIn("bind=10.240.0.2", relay.command[1])
@@ -34,13 +35,11 @@ class ComponentTests(unittest.TestCase):
             self.assertEqual("ws-001", relay.network_namespace)
             spider = next(c for c in manager.components() if c.name == "spider")
             spider_tls = next(c for c in manager.components() if c.name == "spider-tls")
-            exposed = next(c for c in manager.components() if c.name == "expose-spider")
             self.assertEqual("127.0.0.1", spider.command[2])
             self.assertIn("OPENSSL-LISTEN:18080", spider_tls.command[1])
             self.assertEqual("TCP4:127.0.0.1:18080", spider_tls.command[2])
             self.assertEqual("ws-001", spider_tls.network_namespace)
-            self.assertIn("TCP4-LISTEN:20002", exposed.command[1])
-            self.assertEqual("TCP4:10.240.0.2:18080", exposed.command[2])
+            self.assertFalse(any(c.name == "expose-spider" for c in manager.components()))
 
     def test_unit_names_are_instance_scoped(self):
         self.assertEqual("ws-007-smithproxy.service",
@@ -121,11 +120,8 @@ class ComponentTests(unittest.TestCase):
             manager = SystemdComponents(lab, "lab1", "192.0.2.10")
             expose = [component for component in manager.components()
                       if component.name.startswith("expose-")]
-        self.assertEqual(5, len(expose))
-        public = {"expose-api", "expose-proxy", "expose-sift",
-                  "expose-spider", "expose-frontend"}
-        self.assertTrue(all("bind=0.0.0.0" in component.command[1]
-                            for component in expose if component.name in public))
+        self.assertEqual(["expose-proxy"], [component.name for component in expose])
+        self.assertIn("bind=0.0.0.0", expose[0].command[1])
 
     def test_pcap_viewer_uses_workspace_local_storage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -163,6 +159,8 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual("ws-001", storage.network_namespace)
         self.assertEqual("ws-001", relay.network_namespace)
         self.assertIn("--no-browser", component.command)
+        self.assertIn("--base-path", component.command)
+        self.assertIn("/ws001/viewer/", component.command)
         self.assertIn(str(state), storage.command)
         self.assertIn("--watch-root", storage.command)
         self.assertIn("15175", storage.command)
@@ -186,7 +184,7 @@ class ComponentTests(unittest.TestCase):
             executable.touch()
             SystemdComponents(lab, "lab1")._wait_ready({"pcap-viewer"})
         urls = [call.args[0].full_url for call in urlopen.call_args_list]
-        self.assertIn("https://127.0.0.1:20007/readyz", urls)
+        self.assertIn("https://10.240.0.2:15174/readyz", urls)
         self.assertNotIn("http://127.0.0.1:25174/readyz", urls)
         self.assertNotIn("http://10.240.0.2:25174/readyz", urls)
 
@@ -236,7 +234,7 @@ class ComponentTests(unittest.TestCase):
                                   if item.name == "sift")
             pack = lab / "state/lored/lore-pack.json"
             pack_text = pack.read_text(encoding="utf-8")
-        self.assertEqual(("lored", "lored-bridge", "expose-lored"),
+        self.assertEqual(("lored", "lored-bridge"),
                          manager.component_group("lored"))
         self.assertEqual(str(executable), component.command[0])
         self.assertIn(str(pack), component.command)

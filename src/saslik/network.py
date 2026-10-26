@@ -15,6 +15,34 @@ IP_FORWARD = Path("/proc/sys/net/ipv4/ip_forward")
 IP_FORWARD_STATE = Path("/run/saslik/ip_forward.before")
 
 
+def network_rules(runtime: WorkspaceRuntime) -> str:
+    """Return the workspace firewall rules installed inside its namespace."""
+    return f"""
+table ip {runtime.network_nft_table} {{
+  chain input {{
+    type filter hook input priority filter; policy accept;
+    # Web control surfaces are reachable from the host-side gateway only.
+    # Routed clients and Tuntom peers must not bypass portal authentication by
+    # addressing the workspace veth directly. Loopback remains available to
+    # components inside the workspace namespace.
+    iifname "lo" accept
+    tcp dport {{ 55580, 18080, 18081, 8091, 15173, 15174, 15175 }} \
+      iifname "{NS_IF}" ip saddr {runtime.host_address} accept
+    tcp dport {{ 55580, 18080, 18081, 8091, 15173, 15174, 15175 }} drop
+  }}
+  chain forward {{
+    type filter hook forward priority filter; policy accept;
+    iifname "{runtime.host_interface}" accept
+    oifname "{runtime.host_interface}" ct state established,related accept
+  }}
+  chain postrouting {{
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr {runtime.namespace_address}/32 masquerade
+  }}
+}}
+"""
+
+
 def _run(command: list[str], *, tolerate: bool = False,
          input_text: str | None = None) -> None:
     result = subprocess.run(command, input=input_text, text=True, check=False,
@@ -95,19 +123,7 @@ def up(lab: Path, runtime: WorkspaceRuntime) -> None:
         _run(["ip", "-n", runtime.probe_namespace, "route", "add", "default", "via", runtime.probe_gateway])
         _run(["ip", "netns", "exec", runtime.namespace, "sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
         IP_FORWARD.write_text("1\n", encoding="ascii")
-        _run(["nft", "-f", "-"], input_text=f"""
-table ip {runtime.network_nft_table} {{
-  chain forward {{
-    type filter hook forward priority filter; policy accept;
-    iifname \"{runtime.host_interface}\" accept
-    oifname \"{runtime.host_interface}\" ct state established,related accept
-  }}
-  chain postrouting {{
-    type nat hook postrouting priority srcnat; policy accept;
-    ip saddr {runtime.namespace_address}/32 masquerade
-  }}
-}}
-""")
+        _run(["nft", "-f", "-"], input_text=network_rules(runtime))
     except Exception:
         down(lab, runtime)
         raise

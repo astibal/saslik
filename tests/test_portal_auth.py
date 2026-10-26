@@ -4,6 +4,7 @@ import stat
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from urllib.parse import urlencode
 from unittest.mock import Mock
@@ -149,6 +150,26 @@ class PortalSessionTests(unittest.TestCase):
                              ("POST", "/api/cli")):
             status, _, _ = self.request(method, path)
             self.assertEqual(401, status)
+
+    def test_gateway_auth_accepts_only_gateway_secret_and_live_session(self):
+        self.server.gateway = SimpleNamespace(
+            auth_secret="gateway-secret", close=Mock()
+        )
+        status, _, _ = self.request("GET", "/api/gateway/auth")
+        self.assertEqual(404, status)
+
+        status, _, _ = self.request(
+            "GET", "/api/gateway/auth",
+            headers={"X-Saslik-Gateway": "gateway-secret"},
+        )
+        self.assertEqual(401, status)
+
+        cookie, _ = self.claim()
+        status, _, _ = self.request(
+            "GET", "/api/gateway/auth",
+            headers={"X-Saslik-Gateway": "gateway-secret", "Cookie": cookie},
+        )
+        self.assertEqual(204, status)
 
     def test_password_change_keeps_current_session_and_revokes_others(self):
         cookie, _ = self.claim()

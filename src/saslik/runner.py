@@ -153,17 +153,18 @@ class LabRunner:
             # most recent build log. Reconstruct it after portal restarts and
             # when the user switches back to an already running workspace.
             ports = self.runtime.public_ports
+            web = self.runtime.web_prefix
             endpoints.update({
-                "smithproxy_api": f"https://127.0.0.1:{ports['api']}",
+                "smithproxy_api": f"{web}/smithproxy-api/",
                 "proxy": f"http://127.0.0.1:{ports['proxy']}",
                 "cli": f"{self.runtime.namespace_address}:55000",
-                "spider_ui": f"https://127.0.0.1:{ports['frontend']}/",
-                "spider_backend": f"https://127.0.0.1:{ports['spider']}",
-                "sift": f"http://127.0.0.1:{ports['sift']}/api/status",
+                "spider_ui": f"{web}/spider/",
+                "spider_backend": f"{web}/spider-api/",
+                "sift": f"{web}/sift-api/api/status",
             })
             if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
                 endpoints["pcap_viewer"] = (
-                    f"https://127.0.0.1:{ports['pcap-viewer']}/"
+                    f"{web}/viewer/"
                 )
         if (self.lab / "state/certs/default/ca-cert.pem").is_file():
             endpoints["ca_download"] = "/api/ca"

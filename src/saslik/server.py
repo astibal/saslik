@@ -38,6 +38,7 @@ import segno
 from .runner import LabRunner, data_root
 from .ca import install_store, remove_store, store_status
 from .instance import Instance, remember_instance
+from .gateway import GatewayError, NginxGateway
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
@@ -429,6 +430,7 @@ class SaslikServer(ThreadingHTTPServer):
         self.tls_context: ssl.SSLContext | None = None
         self.tls_certificate: Path | None = None
         self.tls_lock = threading.Lock()
+        self.gateway: NginxGateway | None = None
         owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
         runtime = Path(f"/run/user/{owner_uid}")
         if not runtime.is_dir():
@@ -498,6 +500,10 @@ class SaslikServer(ThreadingHTTPServer):
     def guardian_arm(self) -> bool:
         return self.guardian_request("arm")
 
+    def refresh_gateway(self) -> None:
+        if self.gateway is not None:
+            self.gateway.reload()
+
     def server_close(self) -> None:
         if self.psk_server is not None:
             self.psk_server.shutdown()
@@ -515,6 +521,8 @@ class SaslikServer(ThreadingHTTPServer):
         self.gdb_sessions.clear()
         self.guardian_stop()
         self.skewer_audit_log.close()
+        if self.gateway is not None:
+            self.gateway.close()
         super().server_close()
 
     def skewer_audit(self, message: str) -> None:
@@ -714,6 +722,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return self._login_page()
+        if path == "/api/gateway/auth":
+            gateway = self.server.gateway
+            supplied = self.headers.get("X-Saslik-Gateway", "")
+            if gateway is None or not secrets.compare_digest(supplied, gateway.auth_secret):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            status = HTTPStatus.NO_CONTENT if self._portal_session() else HTTPStatus.UNAUTHORIZED
+            self.send_response(status)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path == "/logout":
             token = self._portal_token()
             with self.server.portal_sessions_lock:
@@ -1201,9 +1221,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/portal-tls/renew":
                 with self.server.tls_lock:
                     certificate, key = generate_portal_tls(data_root() / "portal-tls",
-                                                           self.server.server_address[0])
-                    self.server.tls_context.load_cert_chain(certificate, key)
+                                                           self.server.gateway.host if self.server.gateway
+                                                           else self.server.server_address[0])
+                    if self.server.tls_context is not None:
+                        self.server.tls_context.load_cert_chain(certificate, key)
                     self.server.tls_certificate = certificate
+                    self.server.refresh_gateway()
                 return self._json(portal_tls_details(certificate))
             if path == "/api/spider/bootstrap":
                 return self._spider_bootstrap_issue(str(body.get("origin", "")))
@@ -1315,7 +1338,7 @@ class Handler(BaseHTTPRequestHandler):
             raise RuntimeError("Workspace nemá Spider token.")
         backend = self.server.runner.snapshot().get("endpoints", {}).get(
             "spider_backend",
-            f"https://127.0.0.1:{self.server.runner.runtime.public_port('spider')}")
+            f"{self.server.runner.runtime.web_prefix}/spider-api/")
         code = self.server.spider_bootstraps.issue(
             str(backend), token, normalized_origin)
         self._json({"code": code, "expires_in": int(self.server.spider_bootstraps.lifetime)})
@@ -1462,6 +1485,7 @@ class Handler(BaseHTTPRequestHandler):
             self.server.runner.select_instance(instance)
             remember_instance(instance.name)
             self.server.guardian_arm()
+            self.server.refresh_gateway()
             return self._json({"ok": True, "workspace": instance.name})
         if operation == "clone":
             command = [sys.executable, "-m", "saslik.instance", "clone",
@@ -1470,6 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
                                     text=True)
             if result.returncode:
                 raise RuntimeError(result.stderr.strip() or "Klonování workspace selhalo.")
+            self.server.refresh_gateway()
             return self._json({"ok": True, "workspace": new_name})
         if operation != "rename":
             raise RuntimeError("Neznámá workspace operace.")
@@ -1485,6 +1510,7 @@ class Handler(BaseHTTPRequestHandler):
             self.server.runner.select_instance(renamed)
             remember_instance(renamed.name)
             self.server.guardian_arm()
+        self.server.refresh_gateway()
         self._json({"ok": True, "workspace": new_name})
 
     def _lab_must_be_stopped(self) -> None:
@@ -1809,13 +1835,18 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     active_runner = runner or LabRunner()
     active_runner.devel = devel
     certificate, key = ensure_portal_tls(data_root() / "portal-tls", host)
-    server = SaslikServer((host, port), active_runner, devel=devel, log_root=data_root())
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certificate, key)
-    server.tls_context = context
+    # The Python control plane is loopback-only. Nginx owns the public TLS
+    # socket and carries application payloads without copying them through
+    # Python; auth_request sends only the session cookie to this server.
+    server = SaslikServer(("127.0.0.1", 0), active_runner,
+                          devel=devel, log_root=data_root())
     server.tls_certificate = certificate
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    gateway = NginxGateway(
+        host=host, port=port, upstream_port=server.server_port,
+        certificate=certificate, key=key, data_root=data_root(),
+    )
+    server.gateway = gateway
+    gateway.start()
     def paired_status():
         server.skewer_last_seen = time.monotonic()
         snapshot = active_runner.snapshot()
@@ -1823,7 +1854,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         detail["end_to_end"] = snapshot.get("health", {}).get("end_to_end", {})
         return {**skewer_discovery(active_runner.instance),
                 **skewer_ca(active_runner.lab, active_runner.instance),
-                "lab_status": detail, "ui_port": server.server_port,
+                "lab_status": detail, "ui_port": port,
                 "features": tunnel_features()}
     def paired_report(client, payload):
         report = normalize_skewer_report(payload)
@@ -1862,18 +1893,26 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
             elif action == "tunnel-close":
                 server.tunnel_targets.pop(client, None)
         return result
-    server.psk_server = PskServer((host, server.server_port + 1),
-        PairingStore(data_root() / "skewer-clients.json"),
-        paired_status, paired_report, paired_tunnel, audit=server.skewer_audit)
-    threading.Thread(target=server.psk_server.serve_forever, daemon=True).start()
-    server.start_guardian()
+    try:
+        server.psk_server = PskServer(
+            (host, port + 1), PairingStore(data_root() / "skewer-clients.json"),
+            paired_status, paired_report, paired_tunnel,
+            audit=server.skewer_audit,
+        )
+        threading.Thread(
+            target=server.psk_server.serve_forever, daemon=True
+        ).start()
+        server.start_guardian()
+    except Exception:
+        server.server_close()
+        raise
     maintenance_result = server.guardian_exchange("maintenance")
     if not maintenance_result.get("ok"):
         print("Saslik log maintenance: privileged ownership repair failed",
               file=sys.stderr)
     active_runner.component_action = lambda action, component: server.guardian_request(
         f"component-{action.removesuffix('-component')}", component=component)
-    url = f"https://{host}:{server.server_port}/"
+    url = f"https://{host}:{port}/"
     print(f"Saslik hoří na {url}")
     if server.portal_configured:
         print("Portal login: účet saslik je nakonfigurovaný.")

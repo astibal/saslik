@@ -61,6 +61,11 @@ class WorkspaceRuntime:
         return f"ws-{self.workspace_id:03d}"
 
     @property
+    def web_prefix(self) -> str:
+        """Stable URL mount, deliberately independent of workspace names."""
+        return f"/ws{self.workspace_id:03d}"
+
+    @property
     def nft_prefix(self) -> str:
         return self.prefix.replace("-", "_")
 

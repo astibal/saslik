@@ -78,11 +78,11 @@ class RunnerTests(unittest.TestCase):
             (state / "smithproxy.cfg").touch()
             snapshot = runner.snapshot()
 
-        self.assertEqual("https://127.0.0.1:20000",
+        self.assertEqual("/ws001/smithproxy-api/",
                          snapshot["endpoints"]["smithproxy_api"])
         self.assertEqual("http://127.0.0.1:20001",
                          snapshot["endpoints"]["proxy"])
-        self.assertEqual("https://127.0.0.1:20003/",
+        self.assertEqual("/ws001/spider/",
                          snapshot["endpoints"]["spider_ui"])
 
     def test_nat_is_default_and_does_not_start_pasta(self):

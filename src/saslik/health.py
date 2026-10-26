@@ -129,7 +129,7 @@ def collect(lab: Path, *, include_lored: bool = False,
     api_key = values.get("SMITHPROXY_API_KEY", "")
     checks = {
         "smithproxy": lambda: _http_check(
-            f"https://127.0.0.1:{ports['api']}/api/status/ping",
+            f"https://{namespace_address}:55580/api/status/ping",
             {"X-API-Key": api_key} if api_key else {}, True),
         "http_proxy": lambda: _tcp_check("127.0.0.1", ports["proxy"]),
         "socks": lambda: _tcp_check(namespace_address, 1080),
@@ -138,28 +138,28 @@ def collect(lab: Path, *, include_lored: bool = False,
         # that same path instead of probing a removed localhost listener.
         "cli": lambda: _tcp_check(namespace_address, 55000),
         "spider": lambda: _http_check(
-            f"https://127.0.0.1:{ports['spider']}/api/health", insecure=True),
+            f"https://{namespace_address}:18080/api/health", insecure=True),
     }
     if include_lored and (lab / "build/lore/lored/lored").is_file():
         checks["lored"] = lambda: _http_check(
-            f"http://127.0.0.1:{ports['lored']}/readyz")
+            f"http://{namespace_address}:8091/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
         checks["pcap_viewer"] = lambda: _http_check(
-            f"https://127.0.0.1:{ports['pcap-viewer']}/readyz", insecure=True)
+            f"https://{namespace_address}:15174/readyz", insecure=True)
         try:
             storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
                 encoding="ascii").strip()
         except OSError:
             storage_token = ""
         checks["pcap_storage"] = lambda: _http_check(
-            f"http://127.0.0.1:{ports['pcap-storage']}/readyz",
+            f"http://{namespace_address}:15175/readyz",
             {"Authorization": f"Bearer {storage_token}"} if storage_token else {})
     snapshots = {
         "listener_stats": lambda: _json_check(
-            f"https://127.0.0.1:{ports['api']}/api/diag/proxy/listener/stats",
+            f"https://{namespace_address}:55580/api/diag/proxy/listener/stats",
             {"X-API-Key": api_key} if api_key else {}, True),
         "sift_stats": lambda: _json_check(
-            f"http://127.0.0.1:{ports['sift']}/api/diagnostics"),
+            f"http://{namespace_address}:18081/api/diagnostics"),
     }
     with ThreadPoolExecutor(max_workers=len(checks) + len(snapshots),
                             thread_name_prefix="saslik-health") as pool:

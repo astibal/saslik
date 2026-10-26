@@ -103,15 +103,17 @@ the initial Smithproxy configuration and an existing CA certificate/private-key
 pair can be imported. Later starts never rewrite the configuration or CA.
 
 Each workspace receives a stable runtime ID (`ws-001` … `ws-999`), its own
-namespace, systemd slice, routing tables and host ingress block. Public ports
-occupy `20000 + (workspace_id - 1) * 10` through `+7`; the portal shows the
-resolved endpoints and remains the source of truth for clients. This allows
-multiple workspaces to run concurrently without sharing listeners. Internal
-component ports remain unchanged inside each namespace.
+namespace, systemd slice and routing tables. Browser applications share the
+portal HTTPS listener below stable mounts such as `/ws001/spider/` and
+`/ws001/viewer/`. Nginx performs streaming and WebSocket proxying while Saslik
+validates its existing portal session through `auth_request`; application data
+never passes through Python. The forward-proxy protocol retains a dedicated
+workspace port because it is not portal HTTP traffic. Internal component ports
+remain unchanged inside each namespace.
 
 ## Requirements
 
-Linux with systemd, Python 3.13+ including `venv`, `sudo`, Git, CMake, a C++
+Linux with systemd, Python 3.13+ including `venv`, `sudo`, nginx, Git, CMake, a C++
 compiler, Wireshark CLI tools (`sharkd`, `tshark`, `editcap`) and the dependencies
 required by Smithproxy, Spider and Sift. Saslik uses network namespaces,
 nftables and transient systemd services and therefore needs root. Saslik itself stays
