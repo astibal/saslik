@@ -1,3 +1,4 @@
+import base64
 import unittest
 import tempfile
 from pathlib import Path
@@ -5,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
                            normalize_skewer_report,
+                           pairing_qr_data_url,
                            fetch_skewer_deb, skewer_discovery,
                            web_log_tail)
 
@@ -97,6 +99,13 @@ class ResponseTests(unittest.TestCase):
 
 
 class SkewerDiscoveryTests(unittest.TestCase):
+    def test_pairing_qr_is_embedded_svg(self):
+        value = pairing_qr_data_url("skewer://connect?psk=secret")
+
+        prefix = "data:image/svg+xml;base64,"
+        self.assertTrue(value.startswith(prefix))
+        self.assertIn(b"<svg", base64.b64decode(value.removeprefix(prefix)))
+
     def test_interface_ifindex_is_a_reconnect_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

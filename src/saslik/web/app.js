@@ -92,7 +92,8 @@ function renderCards(values,skewerConnected=false){
   actions.className='skewer-pairing-actions';
   actions.setAttribute('role','group');
   actions.setAttribute('aria-label','Párování Skeweru');
-  for(const [action,label] of [['link','Kopírovat párovací adresu'],['rotate','Obnovit párovací klíč']]){
+  let pairingQr=null,qrPanel=null;
+  for(const [action,label] of [['link','Kopírovat párovací adresu'],['qr','Zobrazit QR'],['rotate','Obnovit párovací klíč']]){
    const button=document.createElement('button');
    button.type='button';button.textContent=label;button.className='skewer-pairing-button';
    button.onkeydown=event=>event.stopPropagation();
@@ -100,14 +101,16 @@ function renderCards(values,skewerConnected=false){
     event.stopPropagation();
     if(action==='rotate'&&!confirm('Zneplatnit dosavadní párovací odkaz? Spárovaní klienti zůstanou připojeni.'))return;
     try{
-     const response=await post('/api/skewer/pairing',{action,host:location.hostname.replace(/^\[|\]$/g,'')}),value=await response.json();
+     const requestAction=action==='qr'?'link':action,response=await post('/api/skewer/pairing',{action:requestAction,host:location.hostname.replace(/^\[|\]$/g,'')}),value=await response.json();
      if(!response.ok)throw new Error(value.error);
      if(action==='link'){await navigator.clipboard.writeText(value.link);toast('Párovací adresa zkopírována — vlož ji do Skeweru')}
-     else toast('Párovací klíč obnoven');
+     else if(action==='qr'){pairingQr.src=value.qr;pairingQr.alt='QR kód párovací adresy Skeweru';qrPanel.hidden=false;button.textContent='Obnovit QR'}
+     else{qrPanel.hidden=true;pairingQr.removeAttribute('src');toast('Párovací klíč obnoven')}
     }catch(error){toast(error.message)}
    };
    actions.appendChild(button);
   }
+  qrPanel=document.createElement('div');qrPanel.className='skewer-pairing-qr';qrPanel.hidden=true;qrPanel.dataset.noCardOpen='';pairingQr=document.createElement('img');const qrCaption=document.createElement('small');qrCaption.textContent='Naskenuj ve Skeweru · QR obsahuje jednorázový párovací klíč';qrPanel.append(pairingQr,qrCaption);qrPanel.onclick=event=>event.stopPropagation();actions.appendChild(qrPanel);
   const reveal=document.createElement('details'),summary=document.createElement('summary'),links=document.createElement('div');
   reveal.className='skewer-text-links';reveal.dataset.noCardOpen='';summary.title='Zobrazit adresy jako označitelný text';summary.setAttribute('aria-label','Zobrazit adresy jako text');summary.textContent='›';links.className='skewer-text-links-body';links.dataset.noCardOpen='';reveal.append(summary,links);
   const addTextLink=(label,value)=>{const row=document.createElement('label'),title=document.createElement('small'),text=document.createElement('code');title.textContent=label;text.textContent=value;row.append(title,text);links.appendChild(row);return text};

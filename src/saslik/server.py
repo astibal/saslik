@@ -33,6 +33,8 @@ from urllib.parse import parse_qs, quote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+import segno
+
 from .runner import LabRunner, data_root
 from .ca import install_store, remove_store, store_status
 from .instance import Instance, remember_instance
@@ -222,6 +224,16 @@ def _safe_report_icon(value: object) -> str:
     if not (1 <= width <= 64 and 1 <= height <= 64):
         return ""
     return prefix + base64.b64encode(data).decode("ascii")
+
+
+def pairing_qr_data_url(link: str) -> str:
+    """Render a pairing secret locally without disclosing it to a QR service."""
+    qr = segno.make(link, error="m")
+    output = io.BytesIO()
+    qr.save(output, kind="svg", scale=5, border=2,
+            dark="#101613", light="#f4f7f5")
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def normalize_skewer_report(value: object) -> dict:
@@ -1138,7 +1150,9 @@ class Handler(BaseHTTPRequestHandler):
                 target = str(value.get("host") or host)
                 if not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", target):
                     raise ValueError()
-                return self._json({"link": store.link(target, self.server.psk_server.server_address[1])})
+                link = store.link(target, self.server.psk_server.server_address[1])
+                return self._json({"link": link,
+                                   "qr": pairing_qr_data_url(link)})
             except (ValueError, TypeError, KeyError):
                 return self._json({"error": "Neplatný požadavek párování."}, HTTPStatus.BAD_REQUEST)
         if path.startswith("/api/dev/") and not self.server.devel:
