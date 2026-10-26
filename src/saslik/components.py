@@ -720,13 +720,14 @@ class SystemdComponents:
         address = self.runtime.namespace_address
         checks.append((f"https://{address}:18080/api/health", {}, True))
         checks.append((f"http://{address}:18081/api/health", {}, False))
-        checks.append((f"https://{address}:15173/", {}, True))
+        checks.append((f"https://{address}:15173{self.runtime.web_prefix}/spider/",
+                       {}, True))
         if "lored" in running_components:
             checks.append((f"http://{address}:8091/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             # Exercise the real path.  Viewer binds the workspace loopback;
             # the namespace TLS relay is the only intentional ingress.
-            checks.append((f"https://{address}:15174/readyz",
+            checks.append((f"https://{address}:15174{self.runtime.web_prefix}/viewer/readyz",
                            {"Host": "127.0.0.1"}, True))
         pending = list(checks)
         deadline = time.monotonic() + 30

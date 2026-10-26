@@ -196,6 +196,7 @@ class LabRunner:
                     self.lab, include_lored=self.devel,
                     host_interface=self.runtime.host_interface,
                     namespace_address=self.runtime.namespace_address,
+                    web_prefix=self.runtime.web_prefix,
                     public_ports=self.runtime.public_ports,
                 )
                 value.setdefault("end_to_end", {})["topology"] = {

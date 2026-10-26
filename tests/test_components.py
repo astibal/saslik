@@ -203,9 +203,10 @@ class ComponentTests(unittest.TestCase):
             executable.touch()
             SystemdComponents(lab, "lab1")._wait_ready({"pcap-viewer"})
         urls = [call.args[0].full_url for call in urlopen.call_args_list]
-        self.assertIn("https://10.240.0.2:15174/readyz", urls)
+        self.assertIn("https://10.240.0.2:15173/ws001/spider/", urls)
+        self.assertIn("https://10.240.0.2:15174/ws001/viewer/readyz", urls)
         viewer_request = next(call.args[0] for call in urlopen.call_args_list
-                              if call.args[0].full_url.endswith(":15174/readyz"))
+                              if ":15174/" in call.args[0].full_url)
         self.assertEqual("127.0.0.1", viewer_request.get_header("Host"))
         self.assertNotIn("http://127.0.0.1:25174/readyz", urls)
         self.assertNotIn("http://10.240.0.2:25174/readyz", urls)

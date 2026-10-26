@@ -120,6 +120,7 @@ def end_to_end_status(lab: Path) -> dict[str, object]:
 def collect(lab: Path, *, include_lored: bool = False,
             host_interface: str = "ws001h",
             namespace_address: str = "10.240.0.2",
+            web_prefix: str = "/ws001",
             public_ports: dict[str, int] | None = None) -> dict[str, object]:
     ports = public_ports or {
         "api": 55580, "proxy": 33128, "spider": 18080, "sift": 18081,
@@ -145,7 +146,7 @@ def collect(lab: Path, *, include_lored: bool = False,
             f"http://{namespace_address}:8091/readyz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
         checks["pcap_viewer"] = lambda: _http_check(
-            f"https://{namespace_address}:15174/readyz",
+            f"https://{namespace_address}:15174{web_prefix}/viewer/readyz",
             {"Host": "127.0.0.1"}, True)
         try:
             storage_token = (lab / "state/pcap-viewer/storage.token").read_text(
