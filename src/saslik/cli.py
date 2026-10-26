@@ -58,7 +58,7 @@ def acquire_privileges() -> SudoLease:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(prog="saslik", description="Smithproxy + Spider + Sift micro-launcher")
-    value.add_argument("-i", "--instance", help="pojmenovaný lab (default: naposledy použitý)")
+    value.add_argument("-i", "--instance", help="pojmenovaný workspace (default: naposledy použitý)")
     value.add_argument("--devel", action="store_true",
                        help="zpřístupnit vývojářské nástroje včetně patchování zdrojů")
     display = value.add_mutually_exclusive_group()

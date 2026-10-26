@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.components import Component, SystemdComponents, unit_name
+from saslik.components import (NAMESPACE, PROBE_NAMESPACE, Component,
+                               SystemdComponents, unit_name)
 from saslik.settings import update_settings
 
 
@@ -28,7 +29,9 @@ class ComponentTests(unittest.TestCase):
                 "25173", "--bind", "127.0.0.1", "--directory", str(lab / "state/frontend")))
             relay = next(c for c in manager.components() if c.name == "frontend-tls")
             self.assertIn("OPENSSL-LISTEN:15173", relay.command[1])
+            self.assertIn("bind=10.254.77.2", relay.command[1])
             self.assertEqual("TCP4:127.0.0.1:25173", relay.command[2])
+            self.assertEqual(NAMESPACE, relay.network_namespace)
 
     def test_unit_names_are_instance_scoped(self):
         self.assertEqual("saslik-lab-1-smithproxy.service",
@@ -109,9 +112,11 @@ class ComponentTests(unittest.TestCase):
             manager = SystemdComponents(lab, "lab1", "192.0.2.10")
             expose = [component for component in manager.components()
                       if component.name.startswith("expose-")]
-        self.assertEqual(3, len(expose))
+        self.assertEqual(6, len(expose))
+        public = {"expose-api", "expose-proxy", "expose-cli", "expose-sift",
+                  "expose-spider", "expose-frontend"}
         self.assertTrue(all("bind=0.0.0.0" in component.command[1]
-                            for component in expose))
+                            for component in expose if component.name in public))
 
     def test_pcap_viewer_uses_workspace_local_storage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -145,6 +150,9 @@ class ComponentTests(unittest.TestCase):
         relay = next(item for item in components if item.name == "pcap-viewer-tls")
         self.assertIn("OPENSSL-LISTEN:15174", relay.command[1])
         self.assertEqual("TCP4:127.0.0.1:25174", relay.command[2])
+        self.assertEqual(NAMESPACE, component.network_namespace)
+        self.assertEqual(NAMESPACE, storage.network_namespace)
+        self.assertEqual(NAMESPACE, relay.network_namespace)
         self.assertIn("--no-browser", component.command)
         self.assertIn(str(state), storage.command)
         self.assertIn("--watch-root", storage.command)
@@ -194,12 +202,62 @@ class ComponentTests(unittest.TestCase):
                              if item.name == "lored")
             pack = lab / "state/lored/lore-pack.json"
             pack_text = pack.read_text(encoding="utf-8")
-        self.assertEqual(("lored",), manager.component_group("lored"))
+        self.assertEqual(("lored", "lored-bridge", "expose-lored"),
+                         manager.component_group("lored"))
         self.assertEqual(str(executable), component.command[0])
         self.assertIn(str(pack), component.command)
         self.assertIn('"format":"lore-pack/2"', pack_text)
         self.assertTrue(component.restart_on_failure)
+        self.assertEqual(NAMESPACE, component.network_namespace)
         self.assertIsNone(component.required_feature)
+
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_workspace_services_share_one_network_namespace(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            components = SystemdComponents(Path(directory), "workspace").components()
+        host_ingress = {item.name for item in components
+                        if item.network_namespace is None}
+        self.assertTrue(host_ingress)
+        self.assertTrue(all(name.startswith("expose-") for name in host_ingress))
+        self.assertEqual(
+            PROBE_NAMESPACE,
+            next(item for item in components if item.name == "e2e-probe").network_namespace,
+        )
+        workspace_services = [item for item in components
+                              if item.name != "e2e-probe" and
+                              not item.name.startswith("expose-")]
+        self.assertTrue(workspace_services)
+        self.assertTrue(all(item.network_namespace == NAMESPACE
+                            for item in workspace_services))
+
+    def test_generated_host_callbacks_migrate_to_workspace_loopback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            env = state / "state.env"
+            config = state / "smithproxy.cfg"
+            env.write_text(
+                "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n",
+                encoding="utf-8",
+            )
+            config.write_text(
+                'url = "http://10.254.77.1:18080/webhook";\n'
+                'sift_url = "http://10.254.77.1:18081/webhook";\n'
+                'custom = "http://192.0.2.8/webhook";\n',
+                encoding="utf-8",
+            )
+            SystemdComponents(lab, "workspace")._migrate_internal_endpoints()
+            migrated_env = env.read_text(encoding="utf-8")
+            migrated_config = config.read_text(encoding="utf-8")
+        self.assertIn("http://127.0.0.1:18080/webhook", migrated_env)
+        self.assertIn("http://127.0.0.1:18080/webhook", migrated_config)
+        self.assertIn("http://127.0.0.1:18081/webhook", migrated_config)
+        self.assertIn("http://192.0.2.8/webhook", migrated_config)
 
     @patch("saslik.components._run")
     @patch("saslik.components.license_grant", return_value={"workers": "4", "ignored": "x"})

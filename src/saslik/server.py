@@ -576,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
                 'autocomplete="username" required autofocus></label>'
                 '<label>Password<input name="password" type="password" '
                 'autocomplete="current-password" required></label>'
-                '<button type="submit">Enter the lab <span>→</span></button></form>'
+                '<button type="submit">Enter the workspace <span>→</span></button></form>'
             )
         else:
             title = "Claim your Saslik."
@@ -1495,7 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
         services = self.server.runner._service_status()
         if self.server.runner.operation_running() or any(
                 value.get("state") in {"running", "starting"} for value in services.values()):
-            raise RuntimeError("Binary bundle lze měnit jen při zastaveném labu.")
+            raise RuntimeError("Binary bundle lze měnit jen při zastaveném workspace.")
 
     def _binary_load(self) -> None:
         try:
@@ -1543,7 +1543,7 @@ class Handler(BaseHTTPRequestHandler):
         services = self.server.runner._service_status()
         if self.server.runner.operation_running() or any(
                 value.get("state") in {"running", "starting"} for value in services.values()):
-            raise RuntimeError("Identitu lze přepnout jen při zastaveném labu.")
+            raise RuntimeError("Identitu lze přepnout jen při zastaveném workspace.")
         if operation not in {"activate", "rotate", "import", "rename"}:
             raise RuntimeError("Neznámá operace s identitou.")
         command = ["sudo", "-n", sys.executable, "-m", "saslik.identity", operation,
@@ -1885,4 +1885,4 @@ def serve(host: str = "127.0.0.1", port: int = 8765, display_mode: str = "app",
     finally:
         server.server_close()
         if active_runner.spider.is_dir():
-            print("Guardian uklízí routing a lab…")
+            print("Guardian uklízí routing a workspace…")

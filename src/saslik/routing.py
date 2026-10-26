@@ -120,7 +120,7 @@ def _host_ipv4_addresses() -> list[str]:
 
 def namespace_up() -> None:
     if not Path(f"/run/netns/{NS}").exists():
-        raise RuntimeError("Saslik lab neběží: chybí namespace sxp-test.")
+        raise RuntimeError("Saslik workspace neběží: chybí namespace sxp-test.")
     namespace_down()
     _run(["ip", "-n", NS, "rule", "add", "pref", "100", "fwmark", "1/1", "lookup", "100"])
     _run(["ip", "-n", NS, "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", "100"])
@@ -150,9 +150,9 @@ table inet {NS_TABLE} {{
 
 def routing_up(uid: int) -> None:
     if not Path(f"/run/netns/{NS}").exists():
-        raise RuntimeError("Saslik lab neběží: chybí namespace sxp-test.")
+        raise RuntimeError("Saslik workspace neběží: chybí namespace sxp-test.")
     if not Path(f"/sys/class/net/{HOST_IF}").exists():
-        raise RuntimeError("Saslik lab neběží: chybí ingress rozhraní sxp-test0.")
+        raise RuntimeError("Saslik workspace neběží: chybí ingress rozhraní sxp-test0.")
     # iproute2 returns exit status 2 when a numeric table has never existed.
     # For an idempotent "up" that is the normal empty state, not an error.
     probe = _run(["ip", "route", "show", "table", ROUTE_TABLE],

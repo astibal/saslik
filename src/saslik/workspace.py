@@ -589,7 +589,7 @@ def _validate_ca_pair(certificate: Path, key: Path) -> None:
 
 def initialize_state(lab: Path, template: str = "spider-sift", *,
                      ca_cert: Path | None = None, ca_key: Path | None = None) -> bool:
-    """Create state only for a new lab; never rewrite an existing config/CA."""
+    """Create state only for a new workspace; never rewrite existing config/CA."""
     state = lab / "state"
     config = state / "smithproxy.cfg"
     certs = state / "certs/default"
@@ -647,7 +647,7 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
         f"SPIDER_TOKEN={spider_token}\n"
         "SMITHPROXY_API_URL=https://10.254.77.2:55580\n"
         "SMITHPROXY_CONNECT_URL=http://10.254.77.2:33128\n"
-        "SMITHPROXY_CALLBACK_URL=http://10.254.77.1:18080/webhook\n"
+        "SMITHPROXY_CALLBACK_URL=http://127.0.0.1:18080/webhook\n"
         f"SMITHPROXY_CA_CERT={certs / 'ca-cert.pem'}\n"
         "SMITHPROXY_CLI=10.254.77.2:55000\n",
         encoding="utf-8",
@@ -694,12 +694,12 @@ def _create_config(lab: Path, api_key: str) -> None:
     }};
     webhook = {{
         enabled = TRUE;
-        url = "http://10.254.77.1:18080/webhook";
+        url = "http://127.0.0.1:18080/webhook";
         tls_verify = FALSE;
         api_override = TRUE;
         ping_interval = 5;
         sift = TRUE;
-        sift_url = "http://10.254.77.1:18081/webhook";
+        sift_url = "http://127.0.0.1:18081/webhook";
     }};
 '''
     if "settings = {" not in text:

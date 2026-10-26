@@ -53,7 +53,7 @@ class SystemdTunnelEndpoint:
         if os.geteuid() != 0:
             raise PermissionError("Tunnel endpoints require the privileged supervisor")
         if not (self.netns_root / NAMESPACE).exists():
-            raise RuntimeError("Lab network namespace is not running")
+            raise RuntimeError("Workspace network namespace is not running")
         if not 1 <= lease.slot <= 255 or len(key) != 16:
             raise ValueError("Invalid endpoint")
         if lease.slot in self.endpoints:
