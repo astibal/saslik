@@ -61,14 +61,6 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("-i", "--instance", help="pojmenovaný workspace (default: naposledy použitý)")
     value.add_argument("--devel", action="store_true",
                        help="zpřístupnit vývojářské nástroje včetně patchování zdrojů")
-    display = value.add_mutually_exclusive_group()
-    display.add_argument("--browser", action="store_const", const="browser", dest="display_mode",
-                         help="otevřít v běžném výchozím browseru")
-    display.add_argument("--no-browser", action="store_const", const="none", dest="display_mode",
-                         help="browser neotevírat, pouze vypsat URL")
-    # Never create a detached browser window implicitly. It is too easy to
-    # keep looking at a stale app window after Saslik itself was restarted.
-    value.set_defaults(display_mode="none")
     egress = value.add_mutually_exclusive_group()
     egress.add_argument("--pasta", action="store_true", help="použít pasta egress místo NAT")
     egress.add_argument("--egress", choices=("nat", "pasta"), help="přepsat egress režim instance")
@@ -76,11 +68,6 @@ def parser() -> argparse.ArgumentParser:
     web = sub.add_parser("web", help="spustit lokální web")
     web.add_argument("--host", default=os.environ.get("SASLIK_WEB_HOST", "127.0.0.1"))
     web.add_argument("--port", type=int, default=8765)
-    web_display = web.add_mutually_exclusive_group()
-    web_display.add_argument("--browser", action="store_const", const="browser", dest="display_mode",
-                             default=argparse.SUPPRESS)
-    web_display.add_argument("--no-browser", action="store_const", const="none", dest="display_mode",
-                             default=argparse.SUPPRESS)
     for name in ("start", "reset", "fetch"):
         item = sub.add_parser(name)
         item.add_argument("--branch", default="master")
@@ -119,8 +106,7 @@ def _main(argv: list[str] | None, root) -> int:
         maintenance = LogMaintenance(root).start(run_immediately=False)
         try:
             if args.command in {None, "web"}:
-                serve(web_host, getattr(args, "port", 8765),
-                      getattr(args, "display_mode", "app"), runner, devel=args.devel)
+                serve(web_host, getattr(args, "port", 8765), runner, devel=args.devel)
                 return 0
             return runner.run_console(args.command, getattr(args, "branch", "master"))
         finally:

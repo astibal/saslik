@@ -102,9 +102,12 @@ CLI, API, Spider and CA endpoints. On the first start only, a template can seed
 the initial Smithproxy configuration and an existing CA certificate/private-key
 pair can be imported. Later starts never rewrite the configuration or CA.
 
-Local clients use stable loopback endpoints. In particular, configure the
-same-host HTTP proxy as `http://127.0.0.1:33128`; Saslik forwards it into the
-namespace without relying on PREROUTING/DNAT hairpin behaviour.
+Each workspace receives a stable runtime ID (`ws-001` … `ws-999`), its own
+namespace, systemd slice, routing tables and host ingress block. Public ports
+occupy `20000 + (workspace_id - 1) * 10` through `+7`; the portal shows the
+resolved endpoints and remains the source of truth for clients. This allows
+multiple workspaces to run concurrently without sharing listeners. Internal
+component ports remain unchanged inside each namespace.
 
 ## Requirements
 
@@ -162,13 +165,13 @@ remains an explicit opt-in that additionally routes host-user traffic into it.
 `saslik web` and plain `saslik` start the local UI server in the foreground.
 Saslik requests sudo itself; no second terminal is needed. It prints the URL
 and a ready-to-copy Chromium `--app` command, but never opens a browser
-implicitly. Use `--browser` to open a normal browser explicitly. The HTTP
+implicitly. It prints the portal URL for opening in any browser. The HTTP
 listener binds to loopback only.
 
 For an appliance or an explicitly trusted lab network, bind the UI remotely:
 
 ```bash
-saslik -i lab1 web --host 0.0.0.0 --no-browser
+saslik -i lab1 web --host 0.0.0.0
 ```
 
 In remote mode the HTTP CONNECT, API and CLI forwarders also listen on all IPv4

@@ -9,6 +9,18 @@ WORKSPACE_ID_MIN = 1
 WORKSPACE_ID_MAX = 999
 ADDRESS_POOL = ipaddress.IPv4Network("10.240.0.0/19")
 ADDRESSES_PER_WORKSPACE = 8
+PUBLIC_PORT_BASE = 20000
+PUBLIC_PORT_STRIDE = 10
+PUBLIC_PORT_OFFSETS = {
+    "api": 0,
+    "proxy": 1,
+    "spider": 2,
+    "frontend": 3,
+    "sift": 4,
+    "lored": 5,
+    "pcap-storage": 6,
+    "pcap-viewer": 7,
+}
 
 
 @dataclass(frozen=True)
@@ -118,6 +130,18 @@ class WorkspaceRuntime:
 
     def unit_name(self, component: str) -> str:
         return f"{self.prefix}-{component}.service"
+
+    def public_port(self, service: str) -> int:
+        """Return the stable host port assigned to one workspace service."""
+        try:
+            offset = PUBLIC_PORT_OFFSETS[service]
+        except KeyError as exc:
+            raise ValueError(f"Unknown public workspace service: {service}") from exc
+        return PUBLIC_PORT_BASE + (self.workspace_id - 1) * PUBLIC_PORT_STRIDE + offset
+
+    @property
+    def public_ports(self) -> dict[str, int]:
+        return {service: self.public_port(service) for service in PUBLIC_PORT_OFFSETS}
 
     def _address(self, host: int) -> ipaddress.IPv4Address:
         # Each workspace owns two adjacent /30s from ADDRESS_POOL.

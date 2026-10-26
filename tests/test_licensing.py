@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from saslik.licensing import (EntitlementMissing, LicensingError,
                               bootstrap_issuer, install_issuer,
-                              install_signed_issuer, license_grant)
+                              install_signed_issuer, license_grant,
+                              licensing_report)
 
 
 class LicensingTests(unittest.TestCase):
@@ -58,6 +59,25 @@ class LicensingTests(unittest.TestCase):
         path, _ = self.serve("OK 1", "OK")
         with patch.dict(os.environ, {"SASLIK_LICENSING_SOCKET": str(path)}):
             self.assertEqual({}, license_grant("component.demo", "demo"))
+
+    def test_report_returns_structured_trust_and_licenses(self):
+        path, _ = self.serve(
+            "OK\nROOT\tv1\tAABBCCDD\n"
+            "SIGNING\tsaslik.io-authority\tv1\t11223344\n"
+            "LICENSE\tearlybird-1\tplan.earlybird\tcomponent.lored"
+        )
+        self.assertEqual({
+            "root": {"version": "v1", "fingerprint": "AABBCCDD"},
+            "signing": [{"name": "saslik.io-authority", "version": "v1",
+                         "fingerprint": "11223344"}],
+            "licenses": [{"id": "earlybird-1",
+                          "features": ["plan.earlybird", "component.lored"]}],
+        }, licensing_report(socket_path=path))
+
+    def test_report_rejects_unknown_rows(self):
+        path, _ = self.serve("OK\nSECRET\tmust-not-pass")
+        with self.assertRaisesRegex(LicensingError, "neplatný řádek"):
+            licensing_report(socket_path=path)
 
     def test_install_issuer_sends_utf8_byte_size_and_pem(self):
         key = "-----BEGIN PUBLIC KEY-----\náč\n-----END PUBLIC KEY-----\n"

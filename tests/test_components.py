@@ -39,6 +39,7 @@ class ComponentTests(unittest.TestCase):
             self.assertIn("OPENSSL-LISTEN:18080", spider_tls.command[1])
             self.assertEqual("TCP4:127.0.0.1:18080", spider_tls.command[2])
             self.assertEqual("ws-001", spider_tls.network_namespace)
+            self.assertIn("TCP4-LISTEN:20002", exposed.command[1])
             self.assertEqual("TCP4:10.240.0.2:18080", exposed.command[2])
 
     def test_unit_names_are_instance_scoped(self):
@@ -73,8 +74,8 @@ class ComponentTests(unittest.TestCase):
     def test_stale_forwarder_match_is_specific_to_saslik_topology(self):
         match = SystemdComponents(Path("/tmp/test"), "lab1")._saslik_forwarder_command
         self.assertTrue(match(
-            "socat TCP4-LISTEN:55000,bind=10.240.0.2,reuseaddr,fork "
-            "TCP4:127.0.0.1:55000"
+            "socat TCP4-LISTEN:20000,bind=0.0.0.0,reuseaddr,fork "
+            "TCP4:10.240.0.2:55580"
         ))
         self.assertTrue(match(
             "socat OPENSSL-LISTEN:15174,bind=0.0.0.0,reuseaddr,fork "
@@ -185,7 +186,7 @@ class ComponentTests(unittest.TestCase):
             executable.touch()
             SystemdComponents(lab, "lab1")._wait_ready({"pcap-viewer"})
         urls = [call.args[0].full_url for call in urlopen.call_args_list]
-        self.assertIn("https://127.0.0.1:15174/readyz", urls)
+        self.assertIn("https://127.0.0.1:20007/readyz", urls)
         self.assertNotIn("http://127.0.0.1:25174/readyz", urls)
         self.assertNotIn("http://10.240.0.2:25174/readyz", urls)
 

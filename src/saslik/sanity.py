@@ -9,14 +9,16 @@ from pathlib import Path
 from .runtime import WorkspaceRuntime
 
 
-PORTS = {15173, 15174, 18080, 18081, 33128, 55000, 55580}
+LEGACY_PORTS = {15173, 15174, 18080, 18081, 33128, 55000, 55580}
+
+
 def _capture(command: list[str]) -> str:
     result = subprocess.run(command, check=False, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return result.stdout.strip()
 
 
-def _processes(lab: Path) -> list[str]:
+def _processes(lab: Path, runtime: WorkspaceRuntime) -> list[str]:
     needles = (
         str(lab / "build/smithproxy/smithproxy"),
         str(lab / "build/spider/smithproxy-spider"),
@@ -26,6 +28,7 @@ def _processes(lab: Path) -> list[str]:
         str(lab / "runtime/pcap-viewer-venv/bin/capture-storage"),
         "TCP4-LISTEN:55580", "TCP4-LISTEN:33128", "TCP4-LISTEN:55000",
         "OPENSSL-LISTEN:15173", "OPENSSL-LISTEN:15174",
+        *(f"TCP4-LISTEN:{port}" for port in runtime.public_ports.values()),
     )
     found: list[str] = []
     for process in Path("/proc").glob("[0-9]*"):
@@ -46,12 +49,13 @@ def collect(lab: Path, runtime: WorkspaceRuntime) -> list[tuple[str, list[str]]]
         f"{runtime.prefix}-*.service", runtime.slice_name,
     ]).splitlines() if "guardian" not in line and "control.slice" not in line]
     groups.append(("systemd", units))
-    groups.append(("processes", _processes(lab)))
+    groups.append(("processes", _processes(lab, runtime)))
 
     sockets = []
     for line in _capture(["ss", "-H", "-ltnup"]).splitlines():
         fields = line.split()
-        if any(f":{port}" in line for port in PORTS):
+        ports = LEGACY_PORTS | set(runtime.public_ports.values())
+        if any(f":{port}" in line for port in ports):
             sockets.append(line)
     groups.append(("ports", sockets))
 

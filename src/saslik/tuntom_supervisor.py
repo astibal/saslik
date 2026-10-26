@@ -1,4 +1,6 @@
 """Guardian-owned tunnel sessions; remote callers never choose root commands."""
+import threading
+
 from .components import SystemdComponents
 from .tuntom import TunnelSessions
 from .tuntom_endpoint import SystemdTunnelEndpoint
@@ -9,6 +11,30 @@ class TunnelSupervisor:
     def __init__(self, factory=None):
         self.sessions = {}
         self.factory = factory or self._create
+        self.slots: set[int] = set()
+        self.slot_lock = threading.Lock()
+
+    def _acquire_slot(self) -> int:
+        with self.slot_lock:
+            slot = next((value for value in range(1, 256)
+                         if value not in self.slots), None)
+            if slot is None:
+                raise ValueError("No free tuntom endpoints")
+            self.slots.add(slot)
+            return slot
+
+    def _release_slot(self, slot: int) -> None:
+        with self.slot_lock:
+            self.slots.discard(slot)
+
+    def _new_session(self, target):
+        session = self.factory(target)
+        # Tuntom listens on a host UDP port derived from the slot. Sharing one
+        # allocator across workspace sessions prevents otherwise invisible
+        # host-port collisions while TUN interfaces stay namespace-local.
+        session.leases.acquire_slot = self._acquire_slot
+        session.leases.release_slot = self._release_slot
+        return session
 
     @staticmethod
     def _create(target):
@@ -33,11 +59,7 @@ class TunnelSupervisor:
         if session is None:
             if action != "tunnel-open":
                 raise ValueError("Tunnel session expired")
-            # The current lab uses one shared network namespace. Never allocate
-            # overlapping tunnel IDs for a second workspace during a transition.
-            if any(item.leases.leases for item in self.sessions.values()):
-                raise ValueError("Another workspace still owns tunnel endpoints")
-            session = self.factory(target)
+            session = self._new_session(target)
             self.sessions[target] = session
         key = bytes.fromhex(payload.get("psk", "")) if action == "tunnel-open" else b""
         if action == "tunnel-open" and len(key) != 32:

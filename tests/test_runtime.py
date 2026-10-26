@@ -21,6 +21,11 @@ class WorkspaceRuntimeTests(unittest.TestCase):
         self.assertNotEqual(first.host_nft_table, second.host_nft_table)
         self.assertNotEqual(first.route_table, second.route_table)
         self.assertNotEqual(first.route_mark, second.route_mark)
+        self.assertEqual(20000, first.public_port("api"))
+        self.assertEqual(20007, first.public_port("pcap-viewer"))
+        self.assertEqual(20010, second.public_port("api"))
+        self.assertTrue(set(first.public_ports.values()).isdisjoint(
+            second.public_ports.values()))
 
     def test_highest_workspace_id_stays_in_allocated_address_block(self):
         runtime = WorkspaceRuntime(999)
@@ -48,6 +53,10 @@ class WorkspaceRuntimeTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(
                     ValueError, "001–999"):
                 WorkspaceRuntime(value)
+
+    def test_unknown_public_service_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown public workspace service"):
+            WorkspaceRuntime(1).public_port("unknown")
 
 
 if __name__ == "__main__":

@@ -187,9 +187,10 @@ class SystemdComponents:
         probe_namespace = self.runtime.probe_namespace
         namespace_address = self.runtime.namespace_address
 
-        def forwarder(name: str, listen_port: int, target_port: int, *,
+        def forwarder(name: str, service: str, target_port: int, *,
                       local_only: bool = False) -> Component:
             bind = "127.0.0.1" if local_only else self.expose_address
+            listen_port = self.runtime.public_port(service)
             return Component(
                 name,
                 (socat,
@@ -250,7 +251,7 @@ class SystemdComponents:
             network_namespace=namespace,
             restart_on_failure=component_restart_on_failure(self.lab, "sift"),
         ))
-        result.append(forwarder("expose-sift", 18081, 18081))
+        result.append(forwarder("expose-sift", "sift", 18081))
         if self.devel and lored.is_file():
             result.append(Component(
                 "lored", (str(lored), "--pack", str(self.state / "lored/lore-pack.json"),
@@ -260,7 +261,7 @@ class SystemdComponents:
                 restart_on_failure=component_restart_on_failure(self.lab, "lored"),
             ))
             result.append(publish_loopback("lored-bridge", 8091))
-            result.append(forwarder("expose-lored", 8091, 8091, local_only=True))
+            result.append(forwarder("expose-lored", "lored", 8091, local_only=True))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
             result.append(Component(
@@ -272,7 +273,7 @@ class SystemdComponents:
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-storage"),
             ))
             result.append(publish_loopback("pcap-storage-bridge", 15175))
-            result.append(forwarder("expose-pcap-storage", 15175, 15175,
+            result.append(forwarder("expose-pcap-storage", "pcap-storage", 15175,
                                     local_only=True))
             result.append(Component(
                 "pcap-viewer",
@@ -286,7 +287,7 @@ class SystemdComponents:
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
             result.append(tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
-            result.append(forwarder("expose-pcap-viewer", 15174, 15174))
+            result.append(forwarder("expose-pcap-viewer", "pcap-viewer", 15174))
         result.extend([
                 Component(
                     "spider",
@@ -313,13 +314,14 @@ class SystemdComponents:
                     network_namespace=namespace,
                 ),
                 tls_relay("frontend-tls", 15173, SPIDER_FRONTEND_PORT),
-                forwarder("expose-spider", 18080, 18080),
-                forwarder("expose-frontend", 15173, 15173),
+                forwarder("expose-spider", "spider", 18080),
+                forwarder("expose-frontend", "frontend", 15173),
         ])
         for name, port in (("api", 55580), ("proxy", 33128)):
             result.append(Component(
                 f"expose-{name}",
-                (socat, f"TCP4-LISTEN:{port},bind={self.expose_address},reuseaddr,fork",
+                (socat,
+                 f"TCP4-LISTEN:{self.runtime.public_port(name)},bind={self.expose_address},reuseaddr,fork",
                  f"TCP4:{namespace_address}:{port}"),
                 self.state / f"expose-{name}.log",
                 restart_on_failure=True,
@@ -383,14 +385,14 @@ class SystemdComponents:
             return False
         address = self.runtime.namespace_address
         pairs = (
-            ("TCP4-LISTEN:55580", f"TCP4:{address}:55580"),
-            ("TCP4-LISTEN:33128", f"TCP4:{address}:33128"),
-            ("TCP4-LISTEN:18080", f"TCP4:{address}:18080"),
-            ("TCP4-LISTEN:18081", f"TCP4:{address}:18081"),
-            ("TCP4-LISTEN:8091", f"TCP4:{address}:8091"),
-            ("TCP4-LISTEN:15175", f"TCP4:{address}:15175"),
-            ("TCP4-LISTEN:15173", f"TCP4:{address}:15173"),
-            ("TCP4-LISTEN:15174", f"TCP4:{address}:15174"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('api')}", f"TCP4:{address}:55580"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('proxy')}", f"TCP4:{address}:33128"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('spider')}", f"TCP4:{address}:18080"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('sift')}", f"TCP4:{address}:18081"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('lored')}", f"TCP4:{address}:8091"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('pcap-storage')}", f"TCP4:{address}:15175"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('frontend')}", f"TCP4:{address}:15173"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('pcap-viewer')}", f"TCP4:{address}:15174"),
             (f"TCP4-LISTEN:55000,bind={address}", "TCP4:127.0.0.1:55000"),
             (f"TCP4-LISTEN:8091,bind={address}", "TCP4:127.0.0.1:8091"),
             (f"TCP4-LISTEN:15175,bind={address}", "TCP4:127.0.0.1:15175"),
@@ -715,15 +717,15 @@ class SystemdComponents:
         values = _state_env(self.lab)
         checks = [(values["SMITHPROXY_API_URL"] + "/api/status/ping",
                    {"X-API-Key": values["SMITHPROXY_API_KEY"]}, True)]
-        checks.append(("https://127.0.0.1:18080/api/health", {}, True))
-        checks.append(("http://127.0.0.1:18081/api/health", {}, False))
-        checks.append(("https://127.0.0.1:15173/", {}, True))
+        checks.append((f"https://127.0.0.1:{self.runtime.public_port('spider')}/api/health", {}, True))
+        checks.append((f"http://127.0.0.1:{self.runtime.public_port('sift')}/api/health", {}, False))
+        checks.append((f"https://127.0.0.1:{self.runtime.public_port('frontend')}/", {}, True))
         if "lored" in running_components:
-            checks.append(("http://127.0.0.1:8091/readyz", {}, False))
+            checks.append((f"http://127.0.0.1:{self.runtime.public_port('lored')}/readyz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             # Exercise the real path.  Viewer binds the workspace loopback;
             # the namespace TLS relay is the only intentional ingress.
-            checks.append(("https://127.0.0.1:15174/readyz", {}, True))
+            checks.append((f"https://127.0.0.1:{self.runtime.public_port('pcap-viewer')}/readyz", {}, True))
         pending = list(checks)
         deadline = time.monotonic() + 30
         while pending and time.monotonic() < deadline:
@@ -768,7 +770,7 @@ class SystemdComponents:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             request = urllib.request.Request(
-                "http://127.0.0.1:15175/readyz",
+                f"http://127.0.0.1:{self.runtime.public_port('pcap-storage')}/readyz",
                 headers={"Authorization": f"Bearer {token}"},
             )
             try:
@@ -781,16 +783,16 @@ class SystemdComponents:
     def print_endpoints(self) -> None:
         values = _state_env(self.lab)
         print("Smithproxy:")
-        print("  API:          https://127.0.0.1:55580")
-        print("  HTTP CONNECT: http://127.0.0.1:33128")
+        print(f"  API:          https://127.0.0.1:{self.runtime.public_port('api')}")
+        print(f"  HTTP CONNECT: http://127.0.0.1:{self.runtime.public_port('proxy')}")
         print(f"  CLI:          {self.runtime.namespace_address}:55000")
         print(f"  CA:           {values['SMITHPROXY_CA_CERT']}")
         print("Spider:")
-        print("  UI:      https://127.0.0.1:15173/")
-        print("  Backend: https://127.0.0.1:18080")
-        print("  Sift:    http://127.0.0.1:18081/api/status")
+        print(f"  UI:      https://127.0.0.1:{self.runtime.public_port('frontend')}/")
+        print(f"  Backend: https://127.0.0.1:{self.runtime.public_port('spider')}")
+        print(f"  Sift:    http://127.0.0.1:{self.runtime.public_port('sift')}/api/status")
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            print("PCAP Viewer: https://127.0.0.1:15174/")
+            print(f"PCAP Viewer: https://127.0.0.1:{self.runtime.public_port('pcap-viewer')}/")
         print(f"Logs:    journalctl -u '{self.runtime.prefix}-*'")
 
 

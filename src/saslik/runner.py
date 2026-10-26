@@ -140,6 +140,7 @@ class LabRunner:
                 "initialized": self.spider.is_dir(),
                 "config_initialized": (self.lab / "state/smithproxy.cfg").is_file(),
                 "instance": self.instance,
+                "runtime": self.runtime.prefix,
                 "egress": self.egress,
                 "template": self._job.template,
                 "identity": active_name(self.lab, self.instance),
@@ -147,6 +148,23 @@ class LabRunner:
                 "binary_bundle": self._binary_bundle(),
             }
         endpoints = parse_endpoints(lines) or previous_endpoints
+        if result["config_initialized"]:
+            # Endpoint identity belongs to the workspace runtime, not to the
+            # most recent build log. Reconstruct it after portal restarts and
+            # when the user switches back to an already running workspace.
+            ports = self.runtime.public_ports
+            endpoints.update({
+                "smithproxy_api": f"https://127.0.0.1:{ports['api']}",
+                "proxy": f"http://127.0.0.1:{ports['proxy']}",
+                "cli": f"{self.runtime.namespace_address}:55000",
+                "spider_ui": f"https://127.0.0.1:{ports['frontend']}/",
+                "spider_backend": f"https://127.0.0.1:{ports['spider']}",
+                "sift": f"http://127.0.0.1:{ports['sift']}/api/status",
+            })
+            if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+                endpoints["pcap_viewer"] = (
+                    f"https://127.0.0.1:{ports['pcap-viewer']}/"
+                )
         if (self.lab / "state/certs/default/ca-cert.pem").is_file():
             endpoints["ca_download"] = "/api/ca"
         result["endpoints"] = endpoints
@@ -177,6 +195,7 @@ class LabRunner:
                     self.lab, include_lored=self.devel,
                     host_interface=self.runtime.host_interface,
                     namespace_address=self.runtime.namespace_address,
+                    public_ports=self.runtime.public_ports,
                 )
                 value.setdefault("end_to_end", {})["topology"] = {
                     "namespace": self.runtime.namespace,
