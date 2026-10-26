@@ -33,11 +33,11 @@ SETTINGS = {
     "source_smithproxy": {"label": "Smithproxy source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_smithproxy": {"label": "Smithproxy branch / ref", "secret": False, "default": "master"},
     "source_spider": {"label": "Spider source", "secret": False, "default": "src", "choices": ("src", "bin")},
-    "ref_spider": {"label": "Spider branch / ref", "secret": False, "default": "prefixed-run"},
+    "ref_spider": {"label": "Spider branch / ref", "secret": False, "default": "main"},
     "source_sift": {"label": "Sift source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_sift": {"label": "Sift branch / ref", "secret": False, "default": "main"},
     "source_pcap_viewer": {"label": "PCAP Viewer source", "secret": False, "default": "src", "choices": ("src", "bin")},
-    "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "prefixed-run"},
+    "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "main"},
     "source_lored": {"label": "Lored source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_lored": {"label": "Lored branch / ref", "secret": False, "default": "main"},
 }
