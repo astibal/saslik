@@ -33,6 +33,12 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("proxy_pass https://10.240.0.50:15174;", config)
         self.assertIn("proxy_pass https://10.240.0.2:18080/", config)
         self.assertIn("location ^~ /ws001/smithproxy-api/", config)
+        self.assertIn("location = /ws001/smithproxy-api/", config)
+        self.assertIn(
+            "return 302 /ws001/smithproxy-api/api/status/ping;", config
+        )
+        self.assertIn("return 302 /ws001/sift-api/api/status;", config)
+        self.assertIn("return 302 /ws001/lored-api/readyz;", config)
         self.assertIn("X-Saslik-Gateway private-token", config)
         self.assertIn(
             "auth_request /__saslik_auth",

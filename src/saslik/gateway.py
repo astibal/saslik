@@ -41,14 +41,20 @@ def workspace_locations(instances: list[Instance]) -> str:
         runtime = WorkspaceRuntime(instance.workspace_id)
         prefix = f"/ws{instance.workspace_id:03d}"
         address = runtime.namespace_address
-        for suffix, port, tls, authenticated, websocket, preserve_path in (
-            ("spider", 15173, True, True, False, True),
-            ("spider-api", 18080, True, True, True, False),
-            ("viewer", 15174, True, True, False, True),
-            ("smithproxy-api", 55580, True, False, False, False),
-            ("sift-api", 18081, False, False, False, False),
-            ("lored-api", 8091, False, False, False, False),
+        for suffix, port, tls, authenticated, websocket, preserve_path, landing in (
+            ("spider", 15173, True, True, False, True, None),
+            ("spider-api", 18080, True, True, True, False, None),
+            ("viewer", 15174, True, True, False, True, None),
+            ("smithproxy-api", 55580, True, False, False, False,
+             "api/status/ping"),
+            ("sift-api", 18081, False, False, False, False, "api/status"),
+            ("lored-api", 8091, False, False, False, False, "readyz"),
         ):
+            if landing:
+                locations.append(f"""
+    location = {prefix}/{suffix}/ {{
+        return 302 {prefix}/{suffix}/{landing};
+    }}""")
             upgrade = (
                 "\n        proxy_set_header Upgrade $http_upgrade;"
                 "\n        proxy_set_header Connection $connection_upgrade;"
