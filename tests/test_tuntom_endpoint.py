@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from saslik.tuntom import TunnelLeases
 from saslik.tuntom_endpoint import SystemdTunnelEndpoint
@@ -17,8 +18,12 @@ class EndpointTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        self.manager = Mock(instance="test", state=self.root)
-        (self.root / "sxp-test").touch()
+        runtime = SimpleNamespace(
+            namespace="ws-001", namespace_nft_table="ws_001_route",
+            unit_name=lambda component: f"ws-001-{component}.service",
+        )
+        self.manager = Mock(instance="test", state=self.root, runtime=runtime)
+        (self.root / "ws-001").touch()
         self.backend = SystemdTunnelEndpoint(self.manager, Path("/bin/true"), runtime=self.root,
                                              netns_root=self.root)
         self.backend.run = Mock(return_value=Mock(stdout="[]"))
@@ -57,6 +62,22 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue((directory / "secret.env").is_file())
         self.assertIn(self.lease.slot, self.backend.endpoints)
 
+    @patch("saslik.tuntom_endpoint.os.geteuid", return_value=0)
+    def test_stop_accepts_already_collected_systemd_unit(self, _):
+        self.backend.start(self.lease, bytes(16))
+        directory = self.backend.endpoints[self.lease.slot]
+
+        def run(command):
+            if command[:2] == ["systemctl", "stop"]:
+                raise subprocess.CalledProcessError(5, command)
+            return Mock(stdout="[]")
+
+        self.backend.run.side_effect = run
+        self.backend.stop(self.lease)
+
+        self.assertFalse(directory.exists())
+        self.assertNotIn(self.lease.slot, self.backend.endpoints)
+
     @patch("saslik.tuntom_endpoint.os.geteuid", return_value=1000)
     def test_unprivileged_start_rejected(self, _):
         with self.assertRaises(PermissionError):
@@ -65,7 +86,7 @@ class EndpointTests(unittest.TestCase):
 
     @patch("saslik.tuntom_endpoint.os.geteuid", return_value=0)
     def test_start_reports_missing_lab_namespace(self, _):
-        (self.root / "sxp-test").unlink()
+        (self.root / "ws-001").unlink()
         with self.assertRaisesRegex(RuntimeError, "namespace is not running"):
             self.backend.start(self.lease, bytes(16))
         self.manager._start_component.assert_not_called()

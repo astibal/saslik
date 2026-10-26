@@ -49,6 +49,20 @@ class InstanceTests(unittest.TestCase):
             instance = Instance.load("lab1")
             instance.ensure_config()
             self.assertFalse((Path(directory) / "lab1/profiles.toml").exists())
+            stored = Instance.load("lab1")
+            self.assertEqual(1, stored.workspace_id)
+            self.assertEqual("ws-001", stored.runtime_prefix)
+
+    def test_workspace_ids_are_stable_sequential_and_three_digit(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SASLIK_CONFIG_DIR": directory,
+                         "SASLIK_DATA_DIR": f"{directory}/data"}
+        ):
+            Instance.load("first").ensure_config()
+            Instance.load("second").ensure_config()
+            Instance.load("first").ensure_config()
+            self.assertEqual("ws-001", Instance.load("first").runtime_prefix)
+            self.assertEqual("ws-002", Instance.load("second").runtime_prefix)
 
     def test_discover_finds_named_workspace_without_cli_selection(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -57,7 +71,7 @@ class InstanceTests(unittest.TestCase):
         ):
             lab = Instance.load("lab1")
             lab.ensure_config()
-            lab.data_dir.mkdir(parents=True)
+            lab.data_dir.mkdir(parents=True, exist_ok=True)
             self.assertEqual(["default", "lab1"],
                              [item.name for item in Instance.discover()])
 
@@ -68,12 +82,13 @@ class InstanceTests(unittest.TestCase):
         ):
             old = Instance.load("lab1")
             old.ensure_config()
-            old.data_dir.mkdir(parents=True)
+            old.data_dir.mkdir(parents=True, exist_ok=True)
             (old.data_dir / "marker").write_text("kept", encoding="utf-8")
             rename_instance("lab1", "demo")
             new = Instance.load("demo")
             self.assertTrue((new.config_dir / "saslik.toml").is_file())
             self.assertEqual("kept", (new.data_dir / "marker").read_text(encoding="utf-8"))
+            self.assertEqual("ws-001", new.runtime_prefix)
 
     def test_clone_copies_only_persistent_workspace_state(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -120,6 +135,8 @@ class InstanceTests(unittest.TestCase):
             self.assertEqual("CA", (clone.data_dir /
                                      "state/certs/default/ca-cert.pem").read_text())
             self.assertTrue((clone.config_dir / "saslik.toml").is_file())
+            self.assertNotEqual(Instance.load("lab1").runtime_prefix, clone.runtime_prefix)
+            self.assertEqual("ws-002", clone.runtime_prefix)
             self.assertEqual("locally changed\n", (clone.data_dir /
                              "src/smithproxy/tracked.txt").read_text())
             self.assertEqual('["smithproxy"]\n', (clone.data_dir /

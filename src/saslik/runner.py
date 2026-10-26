@@ -15,6 +15,7 @@ from typing import Callable
 from .components import SystemdComponents
 from .health import collect as collect_health
 from .pasta import cleanup_needed as pasta_cleanup_needed
+from .runtime import WorkspaceRuntime
 
 
 def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False,
@@ -94,6 +95,7 @@ class LabRunner:
         self.egress = egress
         self.expose_address = expose_address
         self.devel = devel
+        self.runtime = WorkspaceRuntime.for_instance(instance)
         self._lock = threading.RLock()
         self._job = Job()
         self._next_id = 1
@@ -116,6 +118,7 @@ class LabRunner:
             raise RuntimeError("Workspace nelze přepnout během probíhající operace.")
         with self._lock:
             self.instance = instance.name
+            self.runtime = WorkspaceRuntime.for_instance(instance.name)
             self.egress = instance.egress
             self.root = instance.data_dir.parent
             self.lab = instance.data_dir
@@ -170,7 +173,18 @@ class LabRunner:
             sampled, value = self._health_cache
             now = time.monotonic()
             if now - sampled >= 1.0:
-                value = collect_health(self.lab, include_lored=self.devel)
+                value = collect_health(
+                    self.lab, include_lored=self.devel,
+                    host_interface=self.runtime.host_interface,
+                    namespace_address=self.runtime.namespace_address,
+                )
+                value.setdefault("end_to_end", {})["topology"] = {
+                    "namespace": self.runtime.namespace,
+                    "host_interface": self.runtime.host_interface,
+                    "namespace_address": self.runtime.namespace_address,
+                    "probe_address": self.runtime.probe_address,
+                    "probe_gateway": self.runtime.probe_gateway,
+                }
                 self._health_cache = (now, value)
             return value
 
@@ -265,13 +279,14 @@ class LabRunner:
         network = sudo + [sys.executable, "-m", "saslik.network"]
         components = sudo + [sys.executable, "-m", "saslik.components"]
         pasta = sudo + [sys.executable, "-m", "saslik.pasta"]
-        routing = sudo + [sys.executable, "-m", "saslik.routing"]
+        routing = sudo + [sys.executable, "-m", "saslik.routing", "-i", self.instance]
         identity = sudo + [sys.executable, "-m", "saslik.identity"]
         netns_dns = sudo + [sys.executable, "-m", "saslik.netns_dns"]
         sanity = sudo + [sys.executable, "-m", "saslik.sanity"]
         dns_server = "169.254.1.1" if self.egress == "pasta" else "1.1.1.1"
         component_args = [str(self.lab), "--instance", self.instance,
                           "--expose-address", self.expose_address]
+        network_args = [str(self.lab), "--instance", self.instance]
         if self.devel:
             component_args.append("--devel")
         workspace_devel = ["--devel"] if self.devel else []
@@ -280,13 +295,13 @@ class LabRunner:
 
         if action == "start":
             commands = [
-                sanity + ["report", str(self.lab)],
+                sanity + ["report", str(self.lab), "--instance", self.instance],
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
             ]
             if clean_pasta:
                 commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
-            commands.append(network + ["down", str(self.lab)])
+            commands.append(network + ["down", *network_args])
             if not (self.lab / "state/binary-bundle.json").is_file():
                 commands.extend([
                     workspace + ["sync", str(self.lab), "--ref", branch, *workspace_devel],
@@ -308,10 +323,12 @@ class LabRunner:
                 ])
             commands.extend([
                 workspace + ["init", str(self.lab), "--ref", branch, "--template", template,
+                             "--instance", self.instance,
                              *(["--ca-cert", ca_cert, "--ca-key", ca_key]
                                if ca_cert or ca_key else [])],
-                network + ["up", str(self.lab)],
-                netns_dns + ["up", str(self.lab), "--nameserver", dns_server],
+                network + ["up", *network_args],
+                netns_dns + ["up", str(self.lab), "--instance", self.instance,
+                             "--nameserver", dns_server],
             ])
             if self.egress == "pasta":
                 commands.append(pasta + ["snapshot", str(self.lab)])
@@ -324,17 +341,18 @@ class LabRunner:
             return commands
         if action == "reset":
             commands = [
-                sanity + ["report", str(self.lab)],
+                sanity + ["report", str(self.lab), "--instance", self.instance],
                 components + ["down", *component_args],
                 routing + ["down", str(self.lab)],
             ]
             if clean_pasta:
                 commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
             commands.extend([
-                network + ["down", str(self.lab)],
+                network + ["down", *network_args],
                 identity + ["rotate", str(self.lab), "--fallback", self.instance],
-                network + ["up", str(self.lab)],
-                netns_dns + ["up", str(self.lab), "--nameserver", dns_server],
+                network + ["up", *network_args],
+                netns_dns + ["up", str(self.lab), "--instance", self.instance,
+                             "--nameserver", dns_server],
             ])
             if self.egress == "pasta":
                 commands.append(pasta + ["snapshot", str(self.lab)])
@@ -366,8 +384,8 @@ class LabRunner:
             if clean_pasta:
                 commands.append(pasta + ["down", str(self.lab), "--instance", self.instance])
             commands.extend([
-                network + ["down", str(self.lab)],
-                netns_dns + ["down", str(self.lab)],
+                network + ["down", *network_args],
+                netns_dns + ["down", str(self.lab), "--instance", self.instance],
             ])
             return commands
         return [components + ["status", *component_args]]

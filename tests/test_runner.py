@@ -53,13 +53,15 @@ class RunnerTests(unittest.TestCase):
     def test_endpoint_parser(self):
         result = parse_endpoints([
             "Spider:", "  UI:      https://helmut:15173/", "  Token:   secret",
-            "  HTTP CONNECT: http://10.254.77.2:33128", "  CLI: 10.254.77.2:55000",
+            "  Backend: https://helmut:18080",
+            "  HTTP CONNECT: http://10.240.0.2:33128", "  CLI: 10.240.0.2:55000",
             "  PCAP Viewer: https://127.0.0.1:15174/",
         ])
         self.assertEqual("https://helmut:15173/", result["spider_ui"])
+        self.assertEqual("https://helmut:18080", result["spider_backend"])
         self.assertEqual("https://helmut:15173/test-ca.pem", result["ca_download"])
         self.assertNotIn("spider_token", result)
-        self.assertEqual("http://10.254.77.2:33128", result["proxy"])
+        self.assertEqual("http://10.240.0.2:33128", result["proxy"])
         self.assertEqual("https://127.0.0.1:15174/", result["pcap_viewer"])
 
     def test_nat_is_default_and_does_not_start_pasta(self):
@@ -131,7 +133,8 @@ class RunnerTests(unittest.TestCase):
         network_up = next(i for i, command in enumerate(joined) if "saslik.network up" in command)
         pasta_up = next(i for i, command in enumerate(joined) if "saslik.pasta up" in command)
         components_up = next(i for i, command in enumerate(joined) if "saslik.components up" in command)
-        namespace_up = next(i for i, command in enumerate(joined) if "saslik.routing namespace-up" in command)
+        namespace_up = next(i for i, command in enumerate(joined)
+                            if "saslik.routing" in command and "namespace-up" in command)
         self.assertLess(network_up, snapshot)
         self.assertLess(snapshot, pasta_up)
         self.assertLess(pasta_up, namespace_up)

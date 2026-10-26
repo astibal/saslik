@@ -18,17 +18,19 @@ from .crash import diagnose_smithproxy
 from .debug import start_gdbserver, stop_gdbserver
 from .tuntom_supervisor import TunnelSupervisor
 from .maintenance import maintain_component_logs, repair_log_ownership
+from .runtime import WorkspaceRuntime
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
 
 
 def cleanup(lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     SystemdComponents(lab, instance, expose_address, devel=devel).down()
-    routing_down()
+    routing_down(runtime)
     pasta_down(lab, instance)
-    network_down(lab)
-    dns_down(lab)
+    network_down(lab, runtime)
+    dns_down(lab, runtime)
 
 
 def parent_alive(pid: int) -> bool:
@@ -94,7 +96,7 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                     elif payload.get("action") == "gdb-start":
                         start_gdbserver(*target, str(payload.get("component", "")))
                     elif payload.get("action") == "gdb-stop":
-                        stop_gdbserver(str(payload["instance"]),
+                        stop_gdbserver(lab, str(payload["instance"]),
                                        str(payload.get("component", "")))
                     elif payload.get("action") in {"component-stop", "component-restart"}:
                         component = str(payload.get("component", ""))

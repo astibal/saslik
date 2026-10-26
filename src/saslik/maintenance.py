@@ -133,8 +133,8 @@ def _journal(unit: str) -> bytes:
 
 def save_logpack(root: Path, lab: Path, instance: str, destination: Path) -> int:
     """Bundle bounded diagnostic logs without workspace secrets or core dumps."""
-    unit_instance = "".join(character if character.isalnum() else "-"
-                            for character in instance)
+    from .runtime import WorkspaceRuntime
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
     files = _logpack_files(root, lab)
     manifest = (
         f"Saslik logpack\nworkspace={instance}\ncreated={int(time.time())}\n"
@@ -146,7 +146,7 @@ def save_logpack(root: Path, lab: Path, instance: str, destination: Path) -> int
         for source, archive in files:
             bundle.add(source, arcname=str(archive), recursive=False)
         _add_bytes(bundle, "journal/workspace.log",
-                   _journal(f"saslik-{unit_instance}-*"))
+                   _journal(f"{runtime.prefix}-*"))
         _add_bytes(bundle, "journal/guardian.log", _journal("saslik-guardian-*"))
     return len(files) + 3
 

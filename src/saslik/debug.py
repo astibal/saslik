@@ -5,7 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .components import SystemdComponents, _unit_instance, unit_name
+from .components import SystemdComponents
+from .runtime import WorkspaceRuntime
 
 
 DEBUG_COMPONENTS = {
@@ -37,10 +38,12 @@ def gdb_client_arguments(gdb: str, binary: Path, port: int) -> list[str]:
     return command
 
 
-def debug_unit(instance: str, component: str) -> str:
+def debug_unit(instance: str, component: str, lab: Path | None = None) -> str:
     if component not in DEBUG_COMPONENTS:
         raise ValueError("Tuto komponentu nelze ladit přes gdbserver.")
-    return f"saslik-{_unit_instance(instance)}-gdb-{component}.service"
+    runtime = (WorkspaceRuntime.for_workspace(lab, instance) if lab is not None
+               else WorkspaceRuntime.for_instance(instance))
+    return runtime.unit_name(f"gdb-{component}")
 
 
 def component_binary(lab: Path, component: str) -> Path:
@@ -64,12 +67,13 @@ def start_gdbserver(lab: Path, instance: str, expose_address: str,
     if status.get("state") != "running" or not pid:
         raise RuntimeError(f"Komponenta {component} neběží.")
     _, port = DEBUG_COMPONENTS[component]
-    unit = debug_unit(instance, component)
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
+    unit = debug_unit(instance, component, lab)
     subprocess.run(["systemctl", "stop", unit], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     command = [
         "systemd-run", "--quiet", "--collect", "--service-type=exec",
-        f"--unit={unit}", f"--slice=saslik-{_unit_instance(instance)}.slice",
+        f"--unit={unit}", f"--slice={runtime.slice_name}",
         "--property=Restart=no", "--property=KillMode=control-group",
         gdbserver, "--once", "--attach", f"127.0.0.1:{port}", str(pid),
     ]
@@ -79,22 +83,23 @@ def start_gdbserver(lab: Path, instance: str, expose_address: str,
         raise RuntimeError(result.stderr.strip() or "gdbserver se nepodařilo spustit.")
 
 
-def stop_gdbserver(instance: str, component: str) -> None:
-    subprocess.run(["systemctl", "stop", debug_unit(instance, component)], check=False,
+def stop_gdbserver(lab: Path, instance: str, component: str) -> None:
+    subprocess.run(["systemctl", "stop", debug_unit(instance, component, lab)], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def debug_status(lab: Path, instance: str) -> list[dict[str, object]]:
     result = []
     for component, (_, port) in DEBUG_COMPONENTS.items():
-        unit = debug_unit(instance, component)
+        runtime = WorkspaceRuntime.for_workspace(lab, instance)
+        unit = debug_unit(instance, component, lab)
         state = subprocess.run(
             ["systemctl", "is-active", unit], check=False, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         ).stdout.strip()
         binary = component_binary(lab, component) if (lab / DEBUG_COMPONENTS[component][0]).is_file() else None
         service = subprocess.run(
-            ["systemctl", "show", unit_name(instance, component),
+            ["systemctl", "show", runtime.unit_name(component),
              "--property=ActiveState,MainPID"], check=False, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         ).stdout

@@ -97,15 +97,15 @@ class SkewerDiscoveryTests(unittest.TestCase):
     def test_interface_ifindex_is_a_reconnect_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            interface = root / "sxp-test0"
+            interface = root / "ws001h"
             interface.mkdir()
             (interface / "ifindex").write_text("846\n", encoding="ascii")
 
             value = skewer_discovery("lab1", root)
 
             self.assertTrue(value["available"])
-            self.assertEqual("10.254.77.2", value["gateway"])
-            self.assertEqual("sxp-test0", value["host_interface"])
+            self.assertEqual("10.240.0.2", value["gateway"])
+            self.assertEqual("ws001h", value["host_interface"])
             self.assertEqual("846", value["generation"])
 
     def test_missing_interface_reports_unavailable(self):

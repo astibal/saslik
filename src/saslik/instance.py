@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import fcntl
+import json
 import re
 import shutil
 import sys
 import tomllib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,20 +65,31 @@ def remembered_instance() -> str:
 class Instance:
     name: str
     egress: str = "nat"
+    workspace_id: int = 0
 
     @classmethod
     def load(cls, name: str, override_egress: str | None = None) -> "Instance":
         name = validate_instance_name(name)
         path = config_root() / name / "saslik.toml"
         stored = "nat"
+        workspace_id = 0
         if path.is_file():
             with path.open("rb") as stream:
                 value = tomllib.load(stream)
             stored = str(value.get("egress", "nat"))
+            workspace_id = int(value.get("workspace_id", 0))
         egress = override_egress or stored
         if egress not in {"nat", "pasta"}:
             raise ValueError("Egress musí být 'nat' nebo 'pasta'.")
-        return cls(name=name, egress=egress)
+        if workspace_id < 0 or workspace_id > 999:
+            raise ValueError("Workspace ID musí být 0 (nepřidělené) nebo 001–999.")
+        return cls(name=name, egress=egress, workspace_id=workspace_id)
+
+    @property
+    def runtime_prefix(self) -> str:
+        if not 1 <= self.workspace_id <= 999:
+            raise RuntimeError("Workspace ještě nemá přidělené runtime ID.")
+        return f"ws-{self.workspace_id:03d}"
 
     @property
     def config_dir(self) -> Path:
@@ -91,12 +103,31 @@ class Instance:
         return data_root() / "instances" / self.name
 
     def ensure_config(self) -> None:
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        path = self.config_dir / "saslik.toml"
-        if not path.exists():
-            # A command-line --pasta is a launch override, not a permanent
-            # mutation. Users can opt in persistently by editing this file.
-            path.write_text('egress = "nat"\n', encoding="utf-8")
+        root = config_root()
+        root.mkdir(parents=True, exist_ok=True)
+        lock_path = root / ".workspace-id.lock"
+        with lock_path.open("a+", encoding="ascii") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            path = self.config_dir / "saslik.toml"
+            current = Instance.load(self.name, self.egress)
+            workspace_id = current.workspace_id
+            if not workspace_id:
+                used = {item.workspace_id for item in Instance.discover()
+                        if item.workspace_id}
+                workspace_id = next((value for value in range(1, 1000)
+                                     if value not in used), None)
+                if workspace_id is None:
+                    raise RuntimeError("Došla volná workspace ID (001–999).")
+                # A command-line --pasta is a launch override, not a permanent
+                # mutation. Preserve an existing egress choice during migration.
+                path.write_text(
+                    f'egress = "{current.egress}"\nworkspace_id = {workspace_id}\n',
+                    encoding="utf-8",
+                )
+            marker = self.data_dir / "workspace-id"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(f"{workspace_id}\n", encoding="ascii")
 
     @classmethod
     def discover(cls) -> list["Instance"]:
@@ -154,6 +185,15 @@ def clone_instance(source_name: str, new_name: str) -> None:
         else:
             target.ensure_config()
             created_config = True
+
+        # A clone is a new runtime workspace and must never inherit the
+        # source namespace/routing identity.
+        config = target.config_dir / "saslik.toml"
+        if config.exists():
+            value = tomllib.loads(config.read_text(encoding="utf-8"))
+            config.write_text(f'egress = "{value.get("egress", "nat")}"\n',
+                              encoding="utf-8")
+        target.ensure_config()
 
         source_state = source.data_dir / "state"
         persistent = [name for name in PERSISTENT_STATE if (source_state / name).exists()]

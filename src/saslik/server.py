@@ -50,7 +50,7 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 from .dev_queries import run_query as run_dev_query
-from .network import HOST_IF, NS_ADDR
+from .runtime import WorkspaceRuntime
 from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
@@ -179,7 +179,8 @@ def fetch_tuntom_deb(architecture: str):
 
 def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
     """Describe the directly-connected lab ingress without configuring the client."""
-    ifindex = network_root / HOST_IF / "ifindex"
+    runtime = WorkspaceRuntime.for_instance(workspace)
+    ifindex = network_root / runtime.host_interface / "ifindex"
     try:
         generation = ifindex.read_text(encoding="ascii").strip()
         available = True
@@ -189,8 +190,8 @@ def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")
         "version": 1,
         "available": available,
         "workspace": workspace,
-        "gateway": NS_ADDR,
-        "host_interface": HOST_IF,
+        "gateway": runtime.namespace_address,
+        "host_interface": runtime.host_interface,
         "generation": generation,
     }
 
@@ -1314,7 +1315,7 @@ class Handler(BaseHTTPRequestHandler):
         if not token:
             raise RuntimeError("Workspace nemá Spider token.")
         backend = self.server.runner.snapshot().get("endpoints", {}).get(
-            "spider_backend", "http://127.0.0.1:18080")
+            "spider_backend", "https://127.0.0.1:18080")
         code = self.server.spider_bootstraps.issue(
             str(backend), token, normalized_origin)
         self._json({"code": code, "expires_in": int(self.server.spider_bootstraps.lifetime)})
@@ -1608,7 +1609,10 @@ class Handler(BaseHTTPRequestHandler):
         action = str(body.get("action", ""))
         session = str(body.get("session", ""))
         if action == "open":
-            stream = socket.create_connection(("127.0.0.1", 55000), timeout=3)
+            runtime = WorkspaceRuntime.for_workspace(
+                self.server.runner.lab, self.server.runner.instance)
+            stream = socket.create_connection(
+                (runtime.namespace_address, 55000), timeout=3)
             stream.setblocking(False)
             session = secrets.token_urlsafe(18)
             with self.server.cli_lock:
