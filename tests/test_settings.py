@@ -78,6 +78,23 @@ class WorkspaceSettingsTests(unittest.TestCase):
             self.assertTrue(setting_value(lab, "collect_coredumps"))
             self.assertTrue(setting_value(lab, "collect_backtraces"))
 
+    def test_api_access_defaults_and_network_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            self.assertTrue(setting_value(lab, "api_allow_host_networks"))
+            self.assertFalse(setting_value(lab, "api_allow_tuntom"))
+            update_settings(lab, {
+                "api_allow_host_networks": False,
+                "api_allow_tuntom": True,
+                "api_allowed_prefixes": "192.168.7.23/24\n2001:db8::1/64",
+            })
+            self.assertFalse(setting_value(lab, "api_allow_host_networks"))
+            self.assertTrue(setting_value(lab, "api_allow_tuntom"))
+            self.assertEqual("192.168.7.0/24\n2001:db8::/64",
+                             setting_value(lab, "api_allowed_prefixes"))
+            with self.assertRaisesRegex(ValueError, "IP prefix"):
+                update_settings(lab, {"api_allowed_prefixes": "not-a-network"})
+
     def test_component_refs_are_strings_and_reject_option_injection(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)

@@ -48,10 +48,12 @@ class GatewayConfigurationTests(unittest.TestCase):
             "auth_request /__saslik_auth",
             self.location(config, "/ws001/viewer/"),
         )
-        self.assertNotIn(
-            "auth_request",
+        self.assertIn(
+            "auth_request /__saslik_api_auth",
             self.location(config, "/ws001/smithproxy-api/"),
         )
+        self.assertIn("X-Saslik-Client-IP $remote_addr", config)
+        self.assertIn("X-Saslik-Original-URI $request_uri", config)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ def _nginx_quote(value: str | Path) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def workspace_locations(instances: list[Instance]) -> str:
+def workspace_locations(instances: list[Instance], auth_secret: str) -> str:
     locations: list[str] = []
     for instance in sorted(instances, key=lambda item: item.workspace_id):
         if not instance.workspace_id:
@@ -43,7 +43,7 @@ def workspace_locations(instances: list[Instance]) -> str:
         address = runtime.namespace_address
         for suffix, port, tls, authenticated, websocket, preserve_path, landing in (
             ("spider", 15173, True, True, False, True, None),
-            ("spider-api", 18080, True, True, True, False, None),
+            ("spider-api", 18080, True, False, True, False, None),
             ("viewer", 15174, True, True, False, True, None),
             ("smithproxy-api", 55580, True, False, False, False,
              "api/status/ping"),
@@ -60,8 +60,12 @@ def workspace_locations(instances: list[Instance]) -> str:
                 "\n        proxy_set_header Connection $connection_upgrade;"
                 if websocket else ""
             )
-            auth = ("\n        auth_request /__saslik_auth;"
-                    "\n        error_page 401 = @saslik_login;" if authenticated else "")
+            if authenticated:
+                auth = ("\n        auth_request /__saslik_auth;"
+                        "\n        error_page 401 = @saslik_login;")
+            else:
+                auth = ("\n        auth_request /__saslik_api_auth;"
+                        "\n        error_page 403 = @saslik_api_forbidden;")
             scheme = "https" if tls else "http"
             tls_options = "\n        proxy_ssl_verify off;" if tls else ""
             # A trailing slash replaces the matched prefix. Prefix-aware UI
@@ -113,10 +117,26 @@ http {{
             proxy_set_header X-Saslik-Gateway {auth_secret};
         }}
 
+        location = /__saslik_api_auth {{
+            internal;
+            proxy_pass http://127.0.0.1:{upstream_port}/api/gateway/api-auth;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Saslik-Gateway {auth_secret};
+            proxy_set_header X-Saslik-Client-IP $remote_addr;
+            proxy_set_header X-Saslik-Original-URI $request_uri;
+            proxy_set_header Cookie $http_cookie;
+        }}
+
+        location @saslik_api_forbidden {{
+            default_type application/json;
+            return 403 '{{"error":"API access is not allowed from this network."}}';
+        }}
+
         location @saslik_login {{
             return 302 /login;
         }}
-{workspace_locations(instances)}
+{workspace_locations(instances, auth_secret)}
 
         location / {{
             proxy_http_version 1.1;

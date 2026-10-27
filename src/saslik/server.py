@@ -21,7 +21,8 @@ import threading
 import tempfile
 import time
 import zipfile
-from .licensing import LicensingError, licensing_report, tunnel_features
+from .licensing import (LicensingError, licensing_report, tunnel_features,
+                        workspace_issuer_status)
 from .portal_auth import (ensure_portal_credentials, portal_account_info,
                           record_portal_login, set_portal_password,
                           verify_portal_password)
@@ -54,6 +55,7 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 from .dev_queries import run_query as run_dev_query
 from .runtime import WorkspaceRuntime
+from .api_access import access_allowed
 from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
@@ -506,6 +508,9 @@ class SaslikServer(ThreadingHTTPServer):
         self.skewer_reports: dict[str, dict] = {}
         self.skewer_reports_lock = threading.Lock()
         self.tunnel_targets: dict[str, str] = {}
+        self.tunnel_addresses: dict[
+            str, ipaddress.IPv4Address | ipaddress.IPv6Address
+        ] = {}
         self.tunnel_targets_lock = threading.Lock()
         self.skewer_audit_log = RotatingLog((log_root or runner.root) / "skewer-api.log",
                                             PROCESS_LOG_LIMIT, LOG_BACKUPS)
@@ -851,6 +856,33 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if path == "/api/gateway/api-auth":
+            gateway = self.server.gateway
+            supplied = self.headers.get("X-Saslik-Gateway", "")
+            if gateway is None or not secrets.compare_digest(supplied, gateway.auth_secret):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            original = self.headers.get("X-Saslik-Original-URI", "")
+            match = re.match(r"^/ws(\d{3})/", original)
+            instance = next((item for item in Instance.discover()
+                             if match and item.workspace_id == int(match.group(1))), None)
+            # A logged-in browser may use an application's API from any
+            # network. Non-browser automation is admitted by workspace policy.
+            allowed = instance is not None and self._portal_session()
+            if instance is not None:
+                with self.server.tunnel_targets_lock:
+                    tunnel_addresses = tuple(
+                        address for client, address in self.server.tunnel_addresses.items()
+                        if self.server.tunnel_targets.get(client) == instance.name
+                    )
+                allowed = allowed or access_allowed(
+                    instance.data_dir, self.headers.get("X-Saslik-Client-IP", ""),
+                    tunnel_addresses=tunnel_addresses)
+            self.send_response(HTTPStatus.NO_CONTENT if allowed else HTTPStatus.FORBIDDEN)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path == "/logout":
             token = self._portal_token()
             with self.server.portal_sessions_lock:
@@ -985,6 +1017,7 @@ class Handler(BaseHTTPRequestHandler):
             workspace = parse_qs(parsed.query).get("workspace", [""])[0]
             lab, _ = self._workspace_target(workspace)
             return self._json({"settings": public_settings(lab),
+                               "license_issuer": workspace_issuer_status(lab),
                                "crash_reports": len(crash_reports(lab)),
                                "source_changes": source_changes(lab)})
         if path == "/api/workspace/source-status":
@@ -2041,8 +2074,14 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         with server.tunnel_targets_lock:
             if action == "tunnel-open":
                 server.tunnel_targets[client] = target.name
+                try:
+                    address = str(result["tunnel"]["client_address"]).split("/", 1)[0]
+                    server.tunnel_addresses[client] = ipaddress.ip_address(address)
+                except (KeyError, TypeError, ValueError):
+                    server.tunnel_addresses.pop(client, None)
             elif action == "tunnel-close":
                 server.tunnel_targets.pop(client, None)
+                server.tunnel_addresses.pop(client, None)
         return result
     try:
         server.psk_server = PskServer(

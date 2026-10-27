@@ -9,7 +9,7 @@ from unittest.mock import patch
 from saslik.licensing import (EntitlementMissing, LicensingError,
                               bootstrap_issuer, install_issuer,
                               install_signed_issuer, license_grant,
-                              licensing_report)
+                              licensing_report, workspace_issuer_status)
 
 
 class LicensingTests(unittest.TestCase):
@@ -132,6 +132,23 @@ class LicensingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch("saslik.licensing.query_txt", return_value=[]):
             self.assertFalse(bootstrap_issuer(Path(directory)))
+
+    def test_workspace_status_reports_verified_dns_cache_without_key_material(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            cache = lab / "state/licensing/dns-key.txt"
+            cache.parent.mkdir(parents=True)
+            cache.write_text(
+                "v=saslik1;issuer=saslik.io-authority;not_before=100;"
+                "not_after=200;key=public;signature=secret\n"
+            )
+            status = workspace_issuer_status(lab)
+        self.assertEqual({
+            "source": "dns-cache", "issuer": "saslik.io-authority",
+            "verified": True, "not_before": 100, "not_after": 200,
+        }, status)
+        self.assertNotIn("key", status)
+        self.assertNotIn("signature", status)
 
 
 if __name__ == "__main__":

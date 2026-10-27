@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from pathlib import Path
 
 from .dns import DnsLookupError, query_txt
+from .settings import setting_value
 
 
 DEFAULT_SOCKET = Path("/run/saslik/licensing.sock")
@@ -15,6 +17,7 @@ MAX_RESPONSE = 64 * 1024
 # in source until the commercial entitlement resolver is available. Package
 # distribution and direct (non-tunnel) routing are not licensed by this switch.
 TUNTOM_ENABLED = True
+ISSUER_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 def tunnel_features() -> dict:
@@ -124,6 +127,39 @@ def bootstrap_issuer(lab: Path, *, socket_path: Path | None = None) -> bool:
         return False
     install_signed_issuer(cached, socket_path=socket_path)
     return True
+
+
+def workspace_issuer_status(lab: Path) -> dict[str, object]:
+    """Describe workspace trust material without exposing public-key records."""
+    if setting_value(lab, "license_issuer_key"):
+        return {"source": "manual", "issuer": DEFAULT_ISSUER, "verified": True}
+
+    cache = lab / "state/licensing/dns-key.txt"
+    try:
+        record = cache.read_text(encoding="ascii").strip()
+    except OSError:
+        return {"source": "none", "verified": False}
+    fields: dict[str, str] = {}
+    for field in record.split(";"):
+        if "=" not in field:
+            return {"source": "invalid-cache", "verified": False}
+        key, value = field.split("=", 1)
+        if not key or key in fields:
+            return {"source": "invalid-cache", "verified": False}
+        fields[key] = value
+    issuer = fields.get("issuer", "")
+    if fields.get("v") != "saslik1" or not ISSUER_NAME.fullmatch(issuer):
+        return {"source": "invalid-cache", "verified": False}
+    result: dict[str, object] = {
+        "source": "dns-cache", "issuer": issuer, "verified": True,
+    }
+    for source, destination in (("not_before", "not_before"),
+                                ("not_after", "not_after")):
+        try:
+            result[destination] = int(fields[source])
+        except (KeyError, ValueError):
+            pass
+    return result
 
 
 def license_grant(feature: str, component: str,

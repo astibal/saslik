@@ -7,12 +7,13 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 from urllib.parse import urlencode
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from saslik.portal_auth import (ensure_portal_credentials, portal_account_info,
                                 record_portal_login, set_portal_password,
                                 verify_portal_password)
 from saslik.server import SaslikServer
+from saslik.settings import update_settings
 
 
 class PortalCredentialsTests(unittest.TestCase):
@@ -240,6 +241,31 @@ class PortalSessionTests(unittest.TestCase):
             headers={"X-Saslik-Gateway": "gateway-secret", "Cookie": cookie},
         )
         self.assertEqual(204, status)
+
+    def test_gateway_api_auth_uses_workspace_network_policy_or_session(self):
+        self.server.gateway = SimpleNamespace(
+            auth_secret="gateway-secret", close=Mock()
+        )
+        lab = self.server.runner.lab
+        instance = SimpleNamespace(name="test", workspace_id=1, data_dir=lab)
+        update_settings(lab, {"api_allow_host_networks": False,
+                              "api_allowed_prefixes": "198.51.100.0/24"})
+
+        def authorize(address, cookie=""):
+            headers = {
+                "X-Saslik-Gateway": "gateway-secret",
+                "X-Saslik-Client-IP": address,
+                "X-Saslik-Original-URI": "/ws001/smithproxy-api/api/status",
+            }
+            if cookie:
+                headers["Cookie"] = cookie
+            with patch("saslik.server.Instance.discover", return_value=[instance]):
+                return self.request("GET", "/api/gateway/api-auth", headers=headers)[0]
+
+        self.assertEqual(204, authorize("198.51.100.27"))
+        self.assertEqual(403, authorize("203.0.113.27"))
+        cookie, _ = self.claim()
+        self.assertEqual(204, authorize("203.0.113.27", cookie))
 
     def test_password_change_keeps_current_session_and_revokes_others(self):
         cookie, _ = self.claim()

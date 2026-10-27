@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -8,6 +9,16 @@ from pathlib import Path
 
 
 SETTINGS = {
+    "api_allow_host_networks": {
+        "label": "Host-connected networks", "secret": False, "default": True,
+    },
+    "api_allow_tuntom": {
+        "label": "Authenticated Tuntom clients", "secret": False, "default": False,
+    },
+    "api_allowed_prefixes": {
+        "label": "Additional trusted networks", "secret": False, "default": "",
+        "kind": "networks", "multiline": True,
+    },
     "source_tuntom": {"label": "Tuntom source", "secret": False, "default": "src", "choices": ("src",)},
     "ref_tuntom": {"label": "Tuntom branch / ref", "secret": False, "default": "main"},
     "ipinfo_token": {
@@ -94,6 +105,23 @@ def update_settings(lab: Path, changes: dict[str, object]) -> None:
             if value not in SETTINGS[key]["choices"]:
                 raise ValueError(f"Neplatná hodnota nastavení: {key}")
             values[key] = value
+        elif SETTINGS[key].get("kind") == "networks":
+            raw = str(raw_value or "")
+            if len(raw) > 8192 or "\0" in raw:
+                raise ValueError(f"Neplatná hodnota nastavení: {key}")
+            networks = []
+            for line in raw.splitlines():
+                candidate = line.strip()
+                if not candidate or candidate.startswith("#"):
+                    continue
+                try:
+                    network = ipaddress.ip_network(candidate, strict=False)
+                except ValueError as exc:
+                    raise ValueError(f"Neplatný IP prefix: {candidate}") from exc
+                canonical = str(network)
+                if canonical not in networks:
+                    networks.append(canonical)
+            values[key] = "\n".join(networks)
         elif isinstance(SETTINGS[key].get("default"), str):
             value = str(raw_value).strip()
             if not value or len(value) > 200 or any(character in value for character in "\r\n\0"):
