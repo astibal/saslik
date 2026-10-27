@@ -56,6 +56,7 @@ class RunnerTests(unittest.TestCase):
             "Spider:", "  UI:      https://helmut:15173/", "  Token:   secret",
             "  Backend: https://helmut:18080",
             "  HTTP CONNECT: http://10.240.0.2:33128", "  CLI: 10.240.0.2:55000",
+            "  SOCKS5: socks5h://10.240.0.2:1080",
             "  PCAP Viewer: https://127.0.0.1:15174/",
         ])
         self.assertEqual("https://helmut:15173/", result["spider_ui"])
@@ -63,6 +64,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual("https://helmut:15173/test-ca.pem", result["ca_download"])
         self.assertNotIn("spider_token", result)
         self.assertEqual("http://10.240.0.2:33128", result["proxy"])
+        self.assertEqual("socks5h://10.240.0.2:1080", result["socks"])
         self.assertEqual("https://127.0.0.1:15174/", result["pcap_viewer"])
 
     @patch("saslik.runner.LabRunner._service_status", return_value={})
@@ -82,6 +84,8 @@ class RunnerTests(unittest.TestCase):
                          snapshot["endpoints"]["smithproxy_api"])
         self.assertEqual("http://127.0.0.1:20001",
                          snapshot["endpoints"]["proxy"])
+        self.assertEqual("socks5h://127.0.0.1:20008",
+                         snapshot["endpoints"]["socks"])
         self.assertEqual("/ws001/spider/",
                          snapshot["endpoints"]["spider_ui"])
 

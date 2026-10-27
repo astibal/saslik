@@ -23,6 +23,7 @@ class WorkspaceRuntimeTests(unittest.TestCase):
         self.assertNotEqual(first.route_mark, second.route_mark)
         self.assertEqual(20000, first.public_port("api"))
         self.assertEqual(20007, first.public_port("pcap-viewer"))
+        self.assertEqual(20008, first.public_port("socks"))
         self.assertEqual(20010, second.public_port("api"))
         self.assertTrue(set(first.public_ports.values()).isdisjoint(
             second.public_ports.values()))

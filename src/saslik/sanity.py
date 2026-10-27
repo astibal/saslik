@@ -82,7 +82,7 @@ def collect(lab: Path, runtime: WorkspaceRuntime) -> list[tuple[str, list[str]]]
     artifact_names = {
         "service.pid", "smithproxy.pid", "spider.pid", "sift.pid",
         "frontend.pid", "pcap-viewer.pid", "cli-forward.pid",
-        "expose-api.pid", "expose-proxy.pid", "expose-cli.pid",
+        "expose-api.pid", "expose-proxy.pid", "expose-socks.pid", "expose-cli.pid",
         "pasta.pid", "pasta.ip_forward.before", "ip_forward.before",
         "netns-resolv.managed",
     }

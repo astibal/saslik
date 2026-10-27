@@ -6,6 +6,7 @@ import html
 import hashlib
 import ipaddress
 import io
+import logging
 import mimetypes
 import os
 import pty
@@ -322,6 +323,26 @@ def pairing_qr_data_url(link: str) -> str:
     return f"data:image/svg+xml;base64,{encoded}"
 
 
+def client_network_view(peer: str, local: str) -> dict:
+    """Describe host routing towards a portal client without guessing symmetry."""
+    result = {"address": peer, "saslik_address": local,
+              "directly_connected": False, "interface": "", "router": ""}
+    try:
+        completed = subprocess.run(
+            ["ip", "-json", "route", "get", peer], capture_output=True,
+            text=True, check=True, timeout=1,
+        )
+        routes = json.loads(completed.stdout)
+        route = routes[0] if isinstance(routes, list) and routes else {}
+        if isinstance(route, dict):
+            result["interface"] = str(route.get("dev", ""))
+            result["router"] = str(route.get("gateway", ""))
+            result["directly_connected"] = not bool(result["router"])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return result
+
+
 def normalize_skewer_report(value: object) -> dict:
     """Validate the intentionally small, read-only client status document."""
     if not isinstance(value, dict) or value.get("version") != 1:
@@ -525,27 +546,86 @@ class SaslikServer(ThreadingHTTPServer):
             runtime = Path(tempfile.gettempdir())
         self.guardian_socket = runtime / f"saslik-guardian-{os.getpid()}.sock"
         self.guardian_unit = f"saslik-guardian-{os.getpid()}.service"
+        self.guardian_start_lock = threading.Lock()
+        self.guardian_retry_after = 0.0
+        self.guardian_started_once = False
+        self.guardian_last_error = ""
+        self.fatal_health_checks = {
+            "guardian": self._guardian_health_error,
+        }
+
+    def _guardian_health_error(self) -> str | None:
+        if self.guardian_socket.exists() or not self.guardian_started_once:
+            return None
+        try:
+            self.start_guardian()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            pass
+        if self.guardian_socket.exists():
+            return None
+        return self.guardian_last_error or "privileged Guardian is unavailable"
+
+    def degraded_status(self) -> dict:
+        issues = []
+        for code, check in tuple(self.fatal_health_checks.items()):
+            try:
+                error = check()
+            except Exception:
+                logging.exception("Fatal health check failed: %s", code)
+                error = "health check failed"
+            if error:
+                issues.append({"code": code, "error": str(error)})
+        return {"active": bool(issues), "issues": issues}
 
     def start_guardian(self) -> None:
-        if self.guardian_socket.exists():
-            return
-        owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
-        privilege = [] if os.geteuid() == 0 else ["sudo", "-n"]
-        command = [*privilege, "systemd-run", "--quiet", "--collect",
-                   f"--unit={self.guardian_unit}", "--slice=saslik-control.slice",
-                   "--property=Restart=no", sys.executable, "-m", "saslik.guardian",
-                   "--socket", str(self.guardian_socket), "--owner-uid", str(owner_uid),
-                   "--parent-pid", str(os.getpid()), "--data-root", str(data_root()),
-                   "--lab", str(self.runner.lab), "--instance", self.runner.instance,
-                   "--expose-address", self.runner.expose_address]
-        if self.devel:
-            command.append("--devel")
-        subprocess.run(command, check=True)
-        deadline = time.monotonic() + 3
-        while not self.guardian_socket.exists() and time.monotonic() < deadline:
-            time.sleep(0.03)
-        if not self.guardian_socket.exists():
-            raise RuntimeError("Privilegovaný guardian nenaběhl.")
+        with self.guardian_start_lock:
+            if self.guardian_socket.exists():
+                return
+            now = time.monotonic()
+            if now < self.guardian_retry_after:
+                raise RuntimeError("Obnova Guardianu čeká na další pokus.")
+            # A missing sudo ticket must not cause every polling request to
+            # launch another sudo process. A valid cached ticket stays silent.
+            self.guardian_retry_after = now + 5
+            recovering = self.guardian_started_once
+            if recovering:
+                logging.error(
+                    "GUARDIAN LOST: privileged control is unavailable; "
+                    "attempting automatic recovery with the cached sudo ticket"
+                )
+            owner_uid = int(os.environ.get("SUDO_UID", os.getuid()))
+            privilege = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            command = [*privilege, "systemd-run", "--quiet", "--collect",
+                       f"--unit={self.guardian_unit}", "--slice=saslik-control.slice",
+                       "--property=Restart=no", sys.executable, "-m", "saslik.guardian",
+                       "--socket", str(self.guardian_socket), "--owner-uid", str(owner_uid),
+                       "--parent-pid", str(os.getpid()), "--data-root", str(data_root()),
+                       "--lab", str(self.runner.lab), "--instance", self.runner.instance,
+                       "--expose-address", self.runner.expose_address]
+            if self.devel:
+                command.append("--devel")
+            try:
+                subprocess.run(command, check=True)
+                deadline = time.monotonic() + 3
+                while not self.guardian_socket.exists() and time.monotonic() < deadline:
+                    time.sleep(0.03)
+                if not self.guardian_socket.exists():
+                    raise RuntimeError("Privilegovaný guardian nenaběhl.")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                self.guardian_last_error = (
+                    "cached sudo authorization is unavailable or Guardian failed to start"
+                )
+                if recovering:
+                    logging.error(
+                        "GUARDIAN RECOVERY FAILED: cached sudo authorization "
+                        "is unavailable or the guardian did not start"
+                    )
+                raise
+            self.guardian_retry_after = 0.0
+            self.guardian_started_once = True
+            self.guardian_last_error = ""
+            if recovering:
+                logging.warning("Guardian recovered; privileged control is available again")
 
     def guardian_request(self, action: str, instance: Instance | None = None,
                          **options: object) -> bool:
@@ -554,7 +634,14 @@ class SaslikServer(ThreadingHTTPServer):
     def guardian_exchange(self, action: str, instance: Instance | None = None,
                           **options: object) -> dict:
         if not self.guardian_socket.exists():
-            return {"ok": False, "error": "Guardian unavailable"}
+            if action == "stop":
+                return {"ok": False, "error": "Guardian unavailable"}
+            try:
+                self.start_guardian()
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                return {"ok": False, "error": "Guardian unavailable"}
+            if not self.guardian_socket.exists():
+                return {"ok": False, "error": "Guardian unavailable"}
         target_lab = instance.data_dir if instance else self.runner.lab
         target_name = instance.name if instance else self.runner.instance
         payload = json.dumps({
@@ -704,10 +791,7 @@ class Handler(BaseHTTPRequestHandler):
         endpoints = snapshot.get("endpoints", {})
         definitions = (
             ("proxy", "PROXY", "HTTP CONNECT", "Set this proxy in your browser or application.", False, "#60e69a"),
-            ("spider_ui", "APPLICATION", "Smithproxy Spider", "Live traffic browser and scripting workbench.", True, "#ff6b35"),
-            ("pcap_viewer", "APPLICATION", "CZ PCAP Viewer", "Open captures stored by this lab.", True, "#54b8ff"),
-            ("smithproxy_api", "API", "Smithproxy API", "Machine-readable proxy control and telemetry endpoint.", True, "#b889ff"),
-            ("sift", "API", "Sift API", "Payload analysis and enrichment endpoint.", True, "#e6bd60"),
+            ("socks", "PROXY", "SOCKS5", "Use this SOCKS5 proxy with remote DNS.", False, "#69b8ff"),
         )
         items = [
             {"kind": kind, "title": title, "description": description,
@@ -723,6 +807,17 @@ class Handler(BaseHTTPRequestHandler):
              "description": "Connect a client and select applications routed through the lab.",
              "url": "/api/skewer", "open": False, "color": "#ff8055"},
         ))
+        workspace_address = str(self.server.runner.runtime.namespace_address)
+        try:
+            adjacent_gateway = str(self.connection.getsockname()[0])
+        except (AttributeError, OSError, TypeError):
+            adjacent_gateway = ""
+        routing = {
+            "target": f"{workspace_address}/32",
+            "via": adjacent_gateway,
+        }
+        peer = self.client_address[0] if self.client_address else ""
+        client = client_network_view(peer, adjacent_gateway)
         services = snapshot.get("services", {})
         downloads = [
             {"title": "Skewer", "platform": "Linux DEB · amd64",
@@ -733,7 +828,23 @@ class Handler(BaseHTTPRequestHandler):
              "url": "/downloads/tuntom_arm64.deb"},
         ]
         downloads.extend(public_installers(self.server.runner.lab))
-        self._json({"items": items, "downloads": downloads, "running": any(
+        host = self.headers.get("Host", "")
+        if not re.fullmatch(r"[A-Za-z0-9.\-:\[\]]+", host):
+            host = f"{adjacent_gateway}:{self.server.server_address[1]}"
+        origin = f"https://{host}"
+        for item in items:
+            url = str(item.get("url", ""))
+            item["qr"] = pairing_qr_data_url(
+                f"{origin}{url}" if url.startswith("/") else url
+            )
+        for download in downloads:
+            url = str(download.get("url", ""))
+            download["qr"] = pairing_qr_data_url(
+                f"{origin}{url}" if url.startswith("/") else url
+            )
+        self._json({"items": items, "downloads": downloads, "routing": routing,
+                    "client": client,
+                    "running": any(
             isinstance(service, dict) and service.get("state") == "running"
             for service in services.values())})
 
@@ -919,6 +1030,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             snapshot = self.server.runner.snapshot()
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
+            snapshot["degraded_mode"] = self.server.degraded_status()
             return self._json(snapshot)
         if path == "/api/licensing":
             try:

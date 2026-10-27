@@ -73,9 +73,11 @@ class PortalSessionTests(unittest.TestCase):
         lab = root / "instances" / "test"
         (lab / "state/certs/default").mkdir(parents=True)
         (lab / "state/certs/default/ca-cert.pem").write_text("test ca")
-        runner = Mock(root=root, lab=lab, instance="test")
+        runner = Mock(root=root, lab=lab, instance="test",
+                      runtime=SimpleNamespace(namespace_address="10.240.0.2"))
         runner.snapshot.return_value = {
             "endpoints": {"proxy": "http://127.0.0.1:3128",
+                          "socks": "socks5h://127.0.0.1:1080",
                           "spider_ui": "http://127.0.0.1:8080",
                           "cli": "tcp://127.0.0.1:5000"},
             "services": {"smithproxy": {"state": "running"}},
@@ -138,9 +140,21 @@ class PortalSessionTests(unittest.TestCase):
         value = json.loads(payload)
         urls = {item["url"] for item in value["items"]}
         self.assertIn("http://127.0.0.1:3128", urls)
+        self.assertIn("socks5h://127.0.0.1:1080", urls)
         self.assertIn("/api/skewer", urls)
         self.assertIn("/connect/ca.pem", urls)
         self.assertNotIn("tcp://127.0.0.1:5000", urls)
+        self.assertNotIn("http://127.0.0.1:8080", urls)
+        self.assertFalse(any(item["kind"] in {"API", "APPLICATION"}
+                             for item in value["items"]))
+        self.assertEqual("10.240.0.2/32", value["routing"]["target"])
+        self.assertEqual("127.0.0.1", value["routing"]["via"])
+        self.assertNotIn("socks_url", value["routing"])
+        self.assertEqual("127.0.0.1", value["client"]["address"])
+        self.assertTrue(all(item["qr"].startswith("data:image/svg+xml;base64,")
+                            for item in value["items"]))
+        self.assertTrue(all(item["qr"].startswith("data:image/svg+xml;base64,")
+                            for item in value["downloads"]))
 
         status, _, _ = self.request("GET", "/api/skewer/pairing")
         self.assertEqual(401, status)

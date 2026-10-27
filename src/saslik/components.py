@@ -79,13 +79,14 @@ class SystemdComponents:
 
     LEGACY_PID_FILES = (
         "smithproxy.pid", "cli-forward.pid", "spider.pid", "sift.pid",
-        "frontend.pid", "expose-api.pid", "expose-proxy.pid", "expose-cli.pid",
+        "frontend.pid", "expose-api.pid", "expose-proxy.pid", "expose-socks.pid",
+        "expose-cli.pid",
         "pcap-viewer.pid",
     )
     BASE_COMPONENT_NAMES = (
         "smithproxy", "cli-forward", "sift", "spider", "spider-tls",
         "frontend", "frontend-tls", "pcap-storage", "pcap-viewer",
-        "pcap-viewer-tls", "expose-api", "expose-proxy", "expose-sift",
+        "pcap-viewer-tls", "expose-api", "expose-proxy", "expose-socks", "expose-sift",
         "expose-spider", "expose-frontend", "expose-pcap-storage",
         "expose-pcap-viewer", "pcap-storage-bridge", "e2e-probe",
     )
@@ -318,7 +319,7 @@ class SystemdComponents:
         # HTTP applications remain on the workspace veth and are published by
         # the shared nginx gateway. Only the forward-proxy protocol needs its
         # own host listener.
-        for name, port in (("proxy", 33128),):
+        for name, port in (("proxy", 33128), ("socks", 1080)):
             result.append(Component(
                 f"expose-{name}",
                 (socat,
@@ -388,6 +389,7 @@ class SystemdComponents:
         pairs = (
             (f"TCP4-LISTEN:{self.runtime.public_port('api')}", f"TCP4:{address}:55580"),
             (f"TCP4-LISTEN:{self.runtime.public_port('proxy')}", f"TCP4:{address}:33128"),
+            (f"TCP4-LISTEN:{self.runtime.public_port('socks')}", f"TCP4:{address}:1080"),
             (f"TCP4-LISTEN:{self.runtime.public_port('spider')}", f"TCP4:{address}:18080"),
             (f"TCP4-LISTEN:{self.runtime.public_port('sift')}", f"TCP4:{address}:18081"),
             (f"TCP4-LISTEN:{self.runtime.public_port('lored')}", f"TCP4:{address}:8091"),
@@ -501,6 +503,7 @@ class SystemdComponents:
             "cli-forward.pid": "TCP4-LISTEN:55000",
             "expose-api.pid": "TCP4-LISTEN:55580",
             "expose-proxy.pid": "TCP4-LISTEN:33128",
+            "expose-socks.pid": "TCP4-LISTEN:1080",
             "expose-cli.pid": "TCP4-LISTEN:55000",
         }
         return expected.get(filename, "\0") in command
@@ -789,6 +792,7 @@ class SystemdComponents:
         print("Smithproxy:")
         print(f"  API:          {self.runtime.web_prefix}/smithproxy-api/")
         print(f"  HTTP CONNECT: http://127.0.0.1:{self.runtime.public_port('proxy')}")
+        print(f"  SOCKS5:       socks5h://127.0.0.1:{self.runtime.public_port('socks')}")
         print(f"  CLI:          {self.runtime.namespace_address}:55000")
         print(f"  CA:           {values['SMITHPROXY_CA_CERT']}")
         print("Spider:")

@@ -20,6 +20,7 @@ PUBLIC_PORT_OFFSETS = {
     "lored": 5,
     "pcap-storage": 6,
     "pcap-viewer": 7,
+    "socks": 8,
 }
 
 

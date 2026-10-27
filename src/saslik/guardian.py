@@ -24,6 +24,17 @@ from .runtime import WorkspaceRuntime
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
 
 
+def send_response(connection: socket.socket, response: dict) -> bool:
+    """Send a best-effort reply without making client lifetime guardian lifetime."""
+    try:
+        connection.sendall(
+            json.dumps(response, separators=(",", ":")).encode() + b"\n"
+        )
+        return True
+    except OSError:
+        return False
+
+
 def cleanup(lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
     runtime = WorkspaceRuntime.for_workspace(lab, instance)
     SystemdComponents(lab, instance, expose_address, devel=devel).down()
@@ -117,12 +128,12 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         repair_log_ownership(root, owner_uid)
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
-                    connection.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+                    send_response(connection, response)
                 except Exception as exc:
                     # Exception messages may contain command arguments. Log only
                     # the type; endpoint phase diagnostics locate the failing step.
                     logging.error("Guardian request failed (%s)", type(exc).__name__)
-                    connection.sendall(json.dumps({"ok": False, "error": str(exc)}).encode() + b"\n")
+                    send_response(connection, {"ok": False, "error": str(exc)})
     finally:
         try:
             tunnels.close()

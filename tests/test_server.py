@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
+                           client_network_view,
                            normalize_skewer_report,
                            pairing_qr_data_url,
                            fetch_skewer_deb, skewer_discovery,
@@ -87,6 +88,30 @@ class SpiderBootstrapTests(unittest.TestCase):
 class ResponseTests(unittest.TestCase):
     def test_portal_uses_persistent_http_connections(self):
         self.assertEqual("HTTP/1.1", Handler.protocol_version)
+
+
+class ClientNetworkViewTests(unittest.TestCase):
+    @patch("saslik.server.subprocess.run")
+    def test_direct_route_reports_saslik_as_next_hop(self, run):
+        run.return_value = MagicMock(
+            stdout='[{"dst":"192.0.2.8","dev":"eth0","prefsrc":"192.0.2.1"}]')
+
+        value = client_network_view("192.0.2.8", "192.0.2.1")
+
+        self.assertTrue(value["directly_connected"])
+        self.assertEqual("eth0", value["interface"])
+        self.assertEqual("192.0.2.1", value["saslik_address"])
+        self.assertEqual("", value["router"])
+
+    @patch("saslik.server.subprocess.run")
+    def test_routed_client_does_not_get_a_guessed_next_hop(self, run):
+        run.return_value = MagicMock(
+            stdout='[{"dst":"198.51.100.8","gateway":"192.0.2.254","dev":"eth0"}]')
+
+        value = client_network_view("198.51.100.8", "192.0.2.1")
+
+        self.assertFalse(value["directly_connected"])
+        self.assertEqual("192.0.2.254", value["router"])
 
     def test_json_ignores_browser_disconnect_during_write(self):
         handler = object.__new__(Handler)

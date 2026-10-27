@@ -96,6 +96,10 @@ class ComponentTests(unittest.TestCase):
             "TCP4:10.240.0.2:55580"
         ))
         self.assertTrue(match(
+            "socat TCP4-LISTEN:20008,bind=0.0.0.0,reuseaddr,fork "
+            "TCP4:10.240.0.2:1080"
+        ))
+        self.assertTrue(match(
             "socat OPENSSL-LISTEN:15174,bind=0.0.0.0,reuseaddr,fork "
             "TCP4:127.0.0.1:25174"
         ))
@@ -139,8 +143,10 @@ class ComponentTests(unittest.TestCase):
             manager = SystemdComponents(lab, "lab1", "192.0.2.10")
             expose = [component for component in manager.components()
                       if component.name.startswith("expose-")]
-        self.assertEqual(["expose-proxy"], [component.name for component in expose])
-        self.assertIn("bind=0.0.0.0", expose[0].command[1])
+        self.assertEqual(["expose-proxy", "expose-socks"],
+                         [component.name for component in expose])
+        self.assertTrue(all("bind=0.0.0.0" in component.command[1]
+                            for component in expose))
 
     def test_pcap_viewer_uses_workspace_local_storage(self):
         with tempfile.TemporaryDirectory() as directory:

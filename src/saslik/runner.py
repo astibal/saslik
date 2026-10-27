@@ -157,6 +157,7 @@ class LabRunner:
             endpoints.update({
                 "smithproxy_api": f"{web}/smithproxy-api/",
                 "proxy": f"http://127.0.0.1:{ports['proxy']}",
+                "socks": f"socks5h://127.0.0.1:{ports['socks']}",
                 "cli": f"{self.runtime.namespace_address}:55000",
                 "spider_ui": f"{web}/spider/",
                 "spider_backend": f"{web}/spider-api/",
@@ -435,6 +436,7 @@ def parse_endpoints(lines) -> dict[str, str]:
     labels = {
         "UI": "spider_ui", "Backend": "spider_backend",
         "Sift": "sift", "API": "smithproxy_api", "HTTP CONNECT": "proxy",
+        "SOCKS5": "socks",
         "CLI": "cli", "CA": "ca", "State": "state", "Logs": "logs",
         "PCAP Viewer": "pcap_viewer",
     }
