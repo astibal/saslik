@@ -1611,7 +1611,8 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.tls_lock:
                     certificate, key = generate_portal_tls(data_root() / "portal-tls",
                                                            self.server.gateway.host if self.server.gateway
-                                                           else self.server.server_address[0])
+                                                           else self.server.server_address[0],
+                                                           (self.server.runner.network_plan.service_address,))
                     if self.server.tls_context is not None:
                         self.server.tls_context.load_cert_chain(certificate, key)
                     self.server.tls_certificate = certificate
@@ -2227,7 +2228,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         print("Používej pouze důvěryhodnou laboratorní síť nebo host firewall.")
     active_runner = runner or LabRunner()
     active_runner.devel = devel
-    certificate, key = ensure_portal_tls(data_root() / "portal-tls", host)
+    certificate, key = ensure_portal_tls(
+        data_root() / "portal-tls", host,
+        (active_runner.network_plan.service_address,),
+    )
     # The Python control plane is loopback-only. Nginx owns the public TLS
     # socket and carries application payloads without copying them through
     # Python; auth_request sends only the session cookie to this server.
