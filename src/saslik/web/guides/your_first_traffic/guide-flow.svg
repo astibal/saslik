@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="690" viewBox="0 0 1000 690" role="img" aria-labelledby="title desc">
+<title id="title">Follow one application's traffic</title><desc id="desc">A selected test application sends traffic through Skewer using direct routing or an available authenticated tunnel. Smithproxy in the active Saslik workspace inspects the traffic on its way to the destination. Spider shows live sessions and PCAP Viewer opens saved captures. Other applications keep their normal route when Selected Apps mode is used.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 8 4 0 8" fill="none" stroke="#ff8048" stroke-width="2"/></marker></defs>
+<rect width="1000" height="690" rx="22" fill="#101916"/>
+<g font-family="sans-serif" fill="#e7efea">
+<text x="38" y="48" font-size="15" fill="#ff8048" letter-spacing="3">01 / FOLLOW THE FLOW</text>
+<text x="38" y="91" font-size="31" font-weight="700">One application. A visible journey.</text>
+<rect x="30" y="130" width="280" height="360" rx="15" fill="#192621" stroke="#435b50"/>
+<text x="52" y="164" font-size="17" fill="#a6b7b0">YOUR DEVICE</text>
+<rect x="50" y="192" width="240" height="85" rx="10" fill="#22382c" stroke="#79dfad"/>
+<text x="70" y="225" font-size="23" font-weight="700">Test application</text><text x="70" y="253" font-size="17" fill="#a6b7b0">Start with one browser</text>
+<path d="M170 284V319" fill="none" stroke="#ff8048" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="50" y="334" width="240" height="125" rx="10" fill="#1e2c26" stroke="#79dfad"/>
+<text x="70" y="369" font-size="25" font-weight="700">Skewer</text><text x="70" y="400" font-size="18">Select apps · set routing</text><text x="70" y="428" font-size="18" fill="#a6b7b0">Help configure CA trust</text>
+<path d="M299 395H390V235H449" fill="none" stroke="#ff8048" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="320" y="433" font-size="17" fill="#ffb18b">Direct route</text><text x="338" y="457" font-size="17" fill="#a6b7b0">or tunnel</text>
+<rect x="465" y="130" width="290" height="360" rx="15" fill="#261e19" stroke="#8c563b"/>
+<text x="487" y="164" font-size="17" fill="#ffb18b">SASLIK · ACTIVE WORKSPACE</text>
+<text x="491" y="217" font-size="25" font-weight="700">Smithproxy</text>
+<text x="491" y="252" font-size="18" fill="#d6bba8">Intercept · inspect</text><text x="491" y="279" font-size="18" fill="#d6bba8">Apply workspace policy</text>
+<path d="M610 300V328" fill="none" stroke="#ff8048" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="485" y="341" width="250" height="120" rx="10" fill="#17251e" stroke="#435b50"/>
+<text x="502" y="375" font-size="20" font-weight="700">Explore the results</text><text x="502" y="407" font-size="18">Spider → live sessions</text><text x="502" y="436" font-size="18">Viewer → saved captures</text>
+<path d="M763 235H810" fill="none" stroke="#ff8048" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="825" y="190" width="145" height="122" rx="12" fill="#192621" stroke="#435b50"/>
+<text x="843" y="228" font-size="20" font-weight="700">Destination</text><text x="843" y="259" font-size="17" fill="#a6b7b0">Website or</text><text x="843" y="283" font-size="17" fill="#a6b7b0">test service</text>
+<rect x="30" y="520" width="940" height="129" rx="12" fill="#17231e"/>
+<text x="52" y="557" font-size="21" font-weight="700">Selected Apps mode</text>
+<text x="52" y="588" font-size="19" fill="#a6b7b0">Other applications keep their normal route. A connected tunnel alone</text>
+<text x="52" y="617" font-size="19" fill="#a6b7b0">does not mean your test application is selected or its HTTPS is trusted.</text>
+</g></svg>

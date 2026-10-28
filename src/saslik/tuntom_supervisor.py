@@ -5,6 +5,7 @@ from .components import SystemdComponents
 from .tuntom import TunnelSessions
 from .tuntom_endpoint import SystemdTunnelEndpoint
 from . import licensing
+from .network_plan import load_for_lab
 
 
 class TunnelSupervisor:
@@ -39,7 +40,9 @@ class TunnelSupervisor:
     @staticmethod
     def _create(target):
         manager = SystemdComponents(*target)
-        return TunnelSessions(SystemdTunnelEndpoint(manager, manager.tuntom_binary))
+        plan = load_for_lab(target[0])
+        return TunnelSessions(SystemdTunnelEndpoint(manager, manager.tuntom_binary),
+                              pool=str(plan.tunnel_pool))
 
     def request(self, target, payload):
         peer = payload.get("peer")

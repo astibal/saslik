@@ -5,13 +5,13 @@
   align-items: center;
   margin-top: 18px;
   padding: 13px 14px;
-  border: 1px solid #364139;
+  border: 1px solid var(--st-border, #364139);
   border-radius: 7px;
-  background: #111a16;
+  background: var(--st-surface, #111a16);
   color: var(--text);
   text-decoration: none;
 }
-.connect-link:hover { border-color: var(--green); background: #132019; }
+.connect-link:hover { border-color: var(--green); background: var(--st-surface, #132019); }
 .connect-link span { font-weight: 700; }
 .connect-link small { grid-column: 1; color: var(--muted); font-size: 10px; }
 .connect-link b { grid-column: 2; grid-row: 1 / 3; color: var(--green); font-size: 20px; }

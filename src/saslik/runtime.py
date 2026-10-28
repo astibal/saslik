@@ -7,7 +7,10 @@ from pathlib import Path
 
 WORKSPACE_ID_MIN = 1
 WORKSPACE_ID_MAX = 999
-ADDRESS_POOL = ipaddress.IPv4Network("10.240.0.0/19")
+from .network_plan import DEFAULT_WORKSPACE_POOL
+
+
+ADDRESS_POOL = DEFAULT_WORKSPACE_POOL
 ADDRESSES_PER_WORKSPACE = 8
 PUBLIC_PORT_BASE = 20000
 PUBLIC_PORT_STRIDE = 10
@@ -29,31 +32,37 @@ class WorkspaceRuntime:
     """Kernel and service identities derived from a stable workspace ID."""
 
     workspace_id: int
+    address_pool: ipaddress.IPv4Network = ADDRESS_POOL
 
     def __post_init__(self) -> None:
         if not WORKSPACE_ID_MIN <= self.workspace_id <= WORKSPACE_ID_MAX:
             raise ValueError("Workspace runtime ID musí být v rozsahu 001–999.")
+        required = WORKSPACE_ID_MAX * ADDRESSES_PER_WORKSPACE
+        if self.address_pool.num_addresses < required:
+            raise ValueError("Workspace address pool je příliš malý.")
 
     @classmethod
-    def for_instance(cls, name: str) -> "WorkspaceRuntime":
+    def for_instance(cls, name: str, *, address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> "WorkspaceRuntime":
         # Lazy import avoids the historical instance -> runner -> components
         # dependency cycle during CLI/module startup.
         from .instance import Instance
         instance = Instance.load(name)
         # Workspace creation owns ID allocation. Runtime lookup stays
         # read-only; ID 001 is the migration identity for a legacy workspace.
-        return cls(instance.workspace_id or 1)
+        return cls(instance.workspace_id or 1, address_pool)
 
     @classmethod
     def for_workspace(cls, lab: Path, name: str) -> "WorkspaceRuntime":
         """Resolve identity from workspace data, including in root services."""
+        from .network_plan import load_for_lab
+        address_pool = load_for_lab(lab).workspace_pool
         marker = lab / "workspace-id"
         try:
             value = int(marker.read_text(encoding="ascii").strip())
         except (OSError, ValueError):
-            return cls.for_instance(name)
+            return cls.for_instance(name, address_pool=address_pool)
         try:
-            return cls(value)
+            return cls(value, address_pool)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 
@@ -152,4 +161,4 @@ class WorkspaceRuntime:
     def _address(self, host: int) -> ipaddress.IPv4Address:
         # Each workspace owns two adjacent /30s from ADDRESS_POOL.
         offset = (self.workspace_id - 1) * ADDRESSES_PER_WORKSPACE + host
-        return ipaddress.IPv4Address(int(ADDRESS_POOL.network_address) + offset)
+        return ipaddress.IPv4Address(int(self.address_pool.network_address) + offset)

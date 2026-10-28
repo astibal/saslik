@@ -55,8 +55,10 @@ from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   revert_all_patches, revert_patch)
 from .debug import DEBUG_COMPONENTS, component_binary, debug_status, gdb_client_arguments
 from .dev_queries import run_query as run_dev_query
-from .runtime import WorkspaceRuntime
+from .runtime import ADDRESS_POOL, WorkspaceRuntime
 from .api_access import access_allowed
+from .network_plan import (NetworkPlan, connected_networks,
+                           load as load_network_plan, save as save_network_plan)
 from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
@@ -260,9 +262,11 @@ def fetch_tuntom_deb(architecture: str):
     return _fetch_github_deb(url, "Tuntom")
 
 
-def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net")) -> dict:
+def skewer_discovery(workspace: str, network_root: Path = Path("/sys/class/net"),
+                     address_pool=None) -> dict:
     """Describe the directly-connected lab ingress without configuring the client."""
-    runtime = WorkspaceRuntime.for_instance(workspace)
+    runtime = WorkspaceRuntime.for_instance(
+        workspace, address_pool=address_pool or ADDRESS_POOL)
     ifindex = network_root / runtime.host_interface / "ifindex"
     try:
         generation = ifindex.read_text(encoding="ascii").strip()
@@ -513,9 +517,15 @@ class SaslikServer(ThreadingHTTPServer):
         super().__init__(address, Handler)
         self.runner = runner
         self.devel = devel
+        self.data_root = log_root or runner.root
+        self.network_plan = load_network_plan(self.data_root)
+        if isinstance(runner, LabRunner):
+            runner.network_plan = self.network_plan
+            runner.runtime = WorkspaceRuntime.for_instance(
+                runner.instance, address_pool=self.network_plan.workspace_pool)
         self.csrf = secrets.token_urlsafe(24)
         self.portal_username, self.portal_configured, self.portal_credentials_path = \
-            ensure_portal_credentials(log_root or runner.root)
+            ensure_portal_credentials(self.data_root)
         self.portal_auth_lock = threading.Lock()
         self.portal_sessions: dict[str, float] = {}
         self.portal_sessions_lock = threading.Lock()
@@ -533,7 +543,7 @@ class SaslikServer(ThreadingHTTPServer):
             str, ipaddress.IPv4Address | ipaddress.IPv6Address
         ] = {}
         self.tunnel_targets_lock = threading.Lock()
-        self.skewer_audit_log = RotatingLog((log_root or runner.root) / "skewer-api.log",
+        self.skewer_audit_log = RotatingLog(self.data_root / "skewer-api.log",
                                             PROCESS_LOG_LIMIT, LOG_BACKUPS)
         self.psk_server = None
         self.tls_context: ssl.SSLContext | None = None
@@ -553,6 +563,27 @@ class SaslikServer(ThreadingHTTPServer):
         self.fatal_health_checks = {
             "guardian": self._guardian_health_error,
         }
+
+    def network_plan_busy(self) -> bool:
+        """Network identities are immutable while any workspace is active."""
+        for instance in Instance.discover():
+            services = SystemdComponents(instance.data_dir, instance.name,
+                                          self.runner.expose_address,
+                                          devel=self.devel).status()
+            if any(item.get("state") in {"running", "starting"}
+                   for item in services.values()):
+                return True
+        return self.runner.operation_running()
+
+    def apply_network_plan(self, plan: NetworkPlan) -> None:
+        save_network_plan(self.data_root, plan)
+        self.network_plan = plan
+        self.runner.network_plan = plan
+        self.runner.runtime = WorkspaceRuntime.for_instance(
+            self.runner.instance, address_pool=plan.workspace_pool)
+        if self.gateway is not None and callable(getattr(self.gateway, "reload", None)):
+            self.gateway.address_pool = plan.workspace_pool
+            self.gateway.reload()
 
     def _guardian_health_error(self) -> str | None:
         if self.guardian_socket.exists() or not self.guardian_started_once:
@@ -732,7 +763,8 @@ class Handler(BaseHTTPRequestHandler):
         with self.server.portal_sessions_lock:
             return max(0, int(self.server.portal_sessions.get(token, 0) - time.monotonic()))
 
-    def _login_page(self, *, error: str = "", status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _login_page(self, *, error: str = "", status: HTTPStatus = HTTPStatus.OK,
+                    setup_values: dict[str, str] | None = None) -> None:
         template = files("saslik.web").joinpath("login.html").read_text(encoding="utf-8")
         mottos = [line.strip() for line in files("saslik.web").joinpath("mottos.txt")
                   .read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -750,7 +782,14 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             title = "Claim your Saslik."
-            subtitle = "Create the administrator password for this new appliance."
+            subtitle = "Create the administrator password and reserve its private networks."
+            plan = self.server.network_plan
+            values = setup_values or {
+                "workspace_pool": str(plan.workspace_pool),
+                "tunnel_pool": str(plan.tunnel_pool),
+                "service_address": str(plan.service_address),
+            }
+            escaped = {key: html.escape(value, quote=True) for key, value in values.items()}
             form = (
                 '<form method="post" action="/setup" autocomplete="off">'
                 '<p class="setup-note">First-access setup is open until this password is saved. '
@@ -759,6 +798,13 @@ class Handler(BaseHTTPRequestHandler):
                 'autocomplete="new-password" minlength="12" maxlength="128" required autofocus></label>'
                 '<label>Repeat password<input name="confirm" type="password" '
                 'autocomplete="new-password" minlength="12" maxlength="128" required></label>'
+                '<fieldset class="network-plan"><legend>Network plan</legend>'
+                '<p>Choose ranges that do not exist in the customer network. Workspaces keep '
+                'their identity; only derived addresses use this global plan.</p>'
+                f'<label>Workspace namespaces<input name="workspace_pool" value="{escaped["workspace_pool"]}" required></label>'
+                f'<label>Tuntom transport<input name="tunnel_pool" value="{escaped["tunnel_pool"]}" required></label>'
+                f'<label>Tunnel service point<input name="service_address" value="{escaped["service_address"]}" required></label>'
+                '</fieldset>'
                 '<button type="submit">Claim appliance <span>→</span></button></form>'
             )
         data = template.replace("{{MOTTO}}", html.escape(secrets.choice(mottos))) \
@@ -917,17 +963,31 @@ class Handler(BaseHTTPRequestHandler):
             form = parse_qs(self.rfile.read(size).decode("utf-8"), keep_blank_values=True)
             password = form.get("password", [""])[0]
             confirm = form.get("confirm", [""])[0]
+            current_plan = self.server.network_plan
+            setup_values = {
+                "workspace_pool": form.get(
+                    "workspace_pool", [str(current_plan.workspace_pool)])[0],
+                "tunnel_pool": form.get(
+                    "tunnel_pool", [str(current_plan.tunnel_pool)])[0],
+                "service_address": form.get(
+                    "service_address", [str(current_plan.service_address)])[0],
+            }
             if password != confirm:
                 return self._login_page(error="The passwords do not match.",
-                                        status=HTTPStatus.BAD_REQUEST)
+                                        status=HTTPStatus.BAD_REQUEST,
+                                        setup_values=setup_values)
+            plan = NetworkPlan.parse(**setup_values)
+            plan.validate(connected_networks())
             with self.server.portal_auth_lock:
                 if self.server.portal_configured:
                     raise RuntimeError("This appliance has already been claimed.")
+                self.server.apply_network_plan(plan)
                 set_portal_password(self.server.portal_credentials_path, password)
                 self.server.portal_configured = True
         except ValueError as exc:
             return self._login_page(error=str(exc) or "Invalid setup request.",
-                                    status=HTTPStatus.BAD_REQUEST)
+                                    status=HTTPStatus.BAD_REQUEST,
+                                    setup_values=locals().get("setup_values"))
         except (UnicodeDecodeError, RuntimeError) as exc:
             return self._login_page(error=str(exc), status=HTTPStatus.CONFLICT)
         return self._issue_session()
@@ -1019,8 +1079,19 @@ class Handler(BaseHTTPRequestHandler):
             "/downloads/tuntom_amd64.deb",
             "/downloads/tuntom_arm64.deb",
         }
-        public_assets = {"/login.css", "/login-connect.css", "/connect.css",
+        public_assets = {"/saslik-theme.css", "/saslik-theme.js", "/saslik-palettes.json", "/login.css", "/login-connect.css", "/network-plan.css", "/connect.css",
                          "/connect-custom.css", "/connect.js",
+                         "/guides/your_first_traffic/index.html",
+                         "/guides/your_first_traffic/guide.css",
+                         "/guides/your_first_traffic/guide.js",
+                         "/guides/your_first_traffic/guide-flow.svg",
+                         "/guides/your_first_traffic/guide-skewer.svg",
+                         "/guides/meet_saslik/index.html",
+                         "/guides/meet_saslik/about.css",
+                        "/guides/meet_saslik/about.js",
+                         "/guides/three_ways_in/index.html",
+                         "/guides/three_ways_in/routes.css",
+                         "/guides/three_ways_in/routes.js",
                          "/saslik-mark.svg", "/card-scenes/cli.png"}
         if path in public_assets:
             return self._asset(path)
@@ -1075,6 +1146,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"csrf": self.server.csrf, "devel": self.server.devel,
                                "username": self.server.portal_username,
                                "expires_in": self._portal_session_remaining(), **account})
+        if path == "/api/network-plan":
+            return self._json({**self.server.network_plan.as_dict(),
+                               "connected_networks": [str(item) for item in connected_networks()],
+                               "busy": self.server.network_plan_busy()})
         if path == "/api/identity":
             services = self.server.runner._service_status()
             running = self.server.runner.operation_running() or any(
@@ -1483,7 +1558,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/crashes/clear", "/api/crashes/diagnose",
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
-                        "/api/account/password", "/api/public-installers"}:
+                        "/api/account/password", "/api/public-installers",
+                        "/api/network-plan"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -1495,6 +1571,19 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/network-plan":
+                if self.server.network_plan_busy():
+                    return self._json(
+                        {"error": "Nejdřív zastav všechny workspaces a probíhající operace."},
+                        HTTPStatus.CONFLICT)
+                plan = NetworkPlan.parse(
+                    str(body.get("workspace_pool", "")),
+                    str(body.get("tunnel_pool", "")),
+                    str(body.get("service_address", "")),
+                )
+                plan.validate(connected_networks())
+                self.server.apply_network_plan(plan)
+                return self._json({"ok": True, **plan.as_dict()})
             if path == "/api/account/password":
                 current = str(body.get("current", ""))
                 password = str(body.get("password", ""))
@@ -1669,7 +1758,9 @@ class Handler(BaseHTTPRequestHandler):
                           for value in services.values())
             items.append({
                 "name": instance.name,
-                "runtime": WorkspaceRuntime.for_instance(instance.name).prefix,
+                "runtime": WorkspaceRuntime.for_instance(
+                    instance.name,
+                    address_pool=self.server.network_plan.workspace_pool).prefix,
                 "selected": instance.name == self.server.runner.instance,
                 "egress": instance.egress,
                 "initialized": (instance.data_dir / "state/smithproxy.cfg").is_file(),
@@ -2140,6 +2231,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     gateway = NginxGateway(
         host=host, port=port, upstream_port=server.server_port,
         certificate=certificate, key=key, data_root=data_root(),
+        address_pool=active_runner.network_plan.workspace_pool,
     )
     server.gateway = gateway
     gateway.start()
@@ -2148,7 +2240,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         snapshot = active_runner.snapshot()
         detail = {key: snapshot.get(key) for key in ("identity", "instance", "runtime_state", "services", "endpoints")}
         detail["end_to_end"] = snapshot.get("health", {}).get("end_to_end", {})
-        return {**skewer_discovery(active_runner.instance),
+        return {**skewer_discovery(active_runner.instance,
+                                   address_pool=active_runner.network_plan.workspace_pool),
                 **skewer_ca(active_runner.lab, active_runner.instance),
                 "lab_status": detail, "ui_port": port,
                 "features": tunnel_features()}

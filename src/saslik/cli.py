@@ -10,6 +10,7 @@ from .instance import Instance, remember_instance, remembered_instance
 from .maintenance import LogMaintenance, process_log
 from .runner import LabRunner, data_root, ensure_friendly_data_link
 from .server import serve
+from .network_plan import load as load_network_plan
 
 
 class SudoLease:
@@ -96,6 +97,7 @@ def _main(argv: list[str] | None, root) -> int:
         remote = web_host != "localhost"
     expose_address = "0.0.0.0" if remote else "127.0.0.1"
     runner = LabRunner(instance.data_dir.parent, instance=instance.name, egress=instance.egress,
+                       network_plan=load_network_plan(data_root()),
                        expose_address=expose_address, devel=args.devel)
     runner.lab = instance.data_dir
     lease = acquire_privileges()

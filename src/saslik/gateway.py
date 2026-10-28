@@ -9,10 +9,11 @@ import signal
 import subprocess
 import sys
 import time
+import ipaddress
 from pathlib import Path
 
 from .instance import Instance
-from .runtime import WorkspaceRuntime
+from .runtime import ADDRESS_POOL, WorkspaceRuntime
 
 
 PR_SET_PDEATHSIG = 1
@@ -33,12 +34,13 @@ def _nginx_quote(value: str | Path) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def workspace_locations(instances: list[Instance], auth_secret: str) -> str:
+def workspace_locations(instances: list[Instance], auth_secret: str,
+                        address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> str:
     locations: list[str] = []
     for instance in sorted(instances, key=lambda item: item.workspace_id):
         if not instance.workspace_id:
             continue
-        runtime = WorkspaceRuntime(instance.workspace_id)
+        runtime = WorkspaceRuntime(instance.workspace_id, address_pool)
         prefix = f"/ws{instance.workspace_id:03d}"
         address = runtime.namespace_address
         for suffix, port, tls, authenticated, websocket, preserve_path, landing in (
@@ -85,9 +87,26 @@ def workspace_locations(instances: list[Instance], auth_secret: str) -> str:
     return "\n".join(locations)
 
 
+def appearance_locations(web_root: Path | None = None) -> str:
+    """Public, non-sensitive theme assets, including on the sign-in screen."""
+    root = web_root or Path(__file__).with_name("web")
+    assets = {"saslik-theme.css": "text/css", "saslik-theme.js": "text/javascript",
+              "saslik-palettes.json": "application/json"}
+    return "\n".join(
+        f"        location = /{name} {{\n"
+        f"            alias {_nginx_quote(root / name)};\n"
+        f"            default_type {mime};\n"
+        '            add_header Cache-Control "no-store";\n'
+        '            add_header X-Content-Type-Options "nosniff";\n'
+        "        }\n"
+        for name, mime in assets.items()
+    )
+
+
 def nginx_config(*, host: str, port: int, upstream_port: int, certificate: Path,
                  key: Path, runtime_dir: Path, auth_secret: str,
-                 instances: list[Instance]) -> str:
+                 instances: list[Instance],
+                 address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> str:
     listen_host = "[::]" if host == "::" else host
     return f"""worker_processes auto;
 pid {_nginx_quote(runtime_dir / 'nginx.pid')};
@@ -136,7 +155,8 @@ http {{
         location @saslik_login {{
             return 302 /login;
         }}
-{workspace_locations(instances, auth_secret)}
+{appearance_locations()}
+{workspace_locations(instances, auth_secret, address_pool)}
 
         location / {{
             proxy_http_version 1.1;
@@ -157,7 +177,8 @@ class NginxGateway:
     """Own one unprivileged nginx process in front of the Saslik control plane."""
 
     def __init__(self, *, host: str, port: int, upstream_port: int,
-                 certificate: Path, key: Path, data_root: Path) -> None:
+                 certificate: Path, key: Path, data_root: Path,
+                 address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> None:
         executable = shutil.which("nginx")
         if executable is None:
             raise GatewayError(
@@ -172,6 +193,7 @@ class NginxGateway:
         self.runtime_dir = data_root / "gateway"
         self.config_path = self.runtime_dir / "nginx.conf"
         self.auth_secret = secrets.token_urlsafe(32)
+        self.address_pool = address_pool
         self.process: subprocess.Popen | None = None
 
     def _write_config(self) -> None:
@@ -183,6 +205,7 @@ class NginxGateway:
             certificate=self.certificate, key=self.key,
             runtime_dir=self.runtime_dir, auth_secret=self.auth_secret,
             instances=Instance.discover(),
+            address_pool=self.address_pool,
         )
         temporary = self.config_path.with_suffix(".tmp")
         temporary.write_text(content, encoding="utf-8")

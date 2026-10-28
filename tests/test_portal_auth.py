@@ -98,7 +98,10 @@ class PortalSessionTests(unittest.TestCase):
         return response.status, headers, data
 
     def claim(self, password="correct horse battery"):
-        body = urlencode({"password": password, "confirm": password})
+        body = urlencode({"password": password, "confirm": password,
+                          "workspace_pool": "198.18.0.0/19",
+                          "tunnel_pool": "198.18.32.0/22",
+                          "service_address": "198.18.36.1"})
         status, headers, _ = self.request(
             "POST", "/setup", body,
             {"Content-Type": "application/x-www-form-urlencoded",
@@ -131,6 +134,17 @@ class PortalSessionTests(unittest.TestCase):
 
     def test_connect_portal_is_public_and_contains_only_unprivileged_links(self):
         for path in ("/connect", "/connect.css", "/connect-custom.css", "/connect.js", "/api/connect",
+                     "/guides/your_first_traffic/index.html",
+                     "/guides/your_first_traffic/guide.css",
+                     "/guides/your_first_traffic/guide.js",
+                     "/guides/your_first_traffic/guide-flow.svg",
+                     "/guides/your_first_traffic/guide-skewer.svg",
+                     "/guides/meet_saslik/index.html",
+                     "/guides/meet_saslik/about.css",
+                    "/guides/meet_saslik/about.js",
+                     "/guides/three_ways_in/index.html",
+                     "/guides/three_ways_in/routes.css",
+                     "/guides/three_ways_in/routes.js",
                      "/connect/ca.pem"):
             status, _, _ = self.request("GET", path)
             self.assertEqual(200, status, path)

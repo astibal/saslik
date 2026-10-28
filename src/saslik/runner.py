@@ -16,6 +16,7 @@ from .components import SystemdComponents
 from .health import collect as collect_health
 from .pasta import cleanup_needed as pasta_cleanup_needed
 from .runtime import WorkspaceRuntime
+from .network_plan import NetworkPlan
 
 
 def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False,
@@ -87,7 +88,8 @@ class LabRunner:
     """Builds a lab and delegates component lifecycle to systemd."""
 
     def __init__(self, root: Path | None = None, *, instance: str = "default", egress: str = "nat",
-                 expose_address: str = "127.0.0.1", devel: bool = False) -> None:
+                 expose_address: str = "127.0.0.1", devel: bool = False,
+                 network_plan: NetworkPlan | None = None) -> None:
         self.root = root or data_root()
         self.root.mkdir(parents=True, exist_ok=True)
         self.lab = self.root / "lab"
@@ -95,7 +97,9 @@ class LabRunner:
         self.egress = egress
         self.expose_address = expose_address
         self.devel = devel
-        self.runtime = WorkspaceRuntime.for_instance(instance)
+        self.network_plan = network_plan or NetworkPlan()
+        self.runtime = WorkspaceRuntime.for_instance(
+            instance, address_pool=self.network_plan.workspace_pool)
         self._lock = threading.RLock()
         self._job = Job()
         self._next_id = 1
@@ -118,7 +122,8 @@ class LabRunner:
             raise RuntimeError("Workspace nelze přepnout během probíhající operace.")
         with self._lock:
             self.instance = instance.name
-            self.runtime = WorkspaceRuntime.for_instance(instance.name)
+            self.runtime = WorkspaceRuntime.for_instance(
+                instance.name, address_pool=self.network_plan.workspace_pool)
             self.egress = instance.egress
             self.root = instance.data_dir.parent
             self.lab = instance.data_dir

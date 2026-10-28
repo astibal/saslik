@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Saslik shared palettes v1",
+  "type": "object",
+  "required": [
+    "version",
+    "palettes"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "palettes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "modes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,47}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "modes": {
+            "type": "object",
+            "required": [
+              "dark",
+              "light"
+            ],
+            "properties": {
+              "dark": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "canvas",
+                  "surface",
+                  "surface-raised",
+                  "text",
+                  "muted",
+                  "border",
+                  "brand",
+                  "brand-hover",
+                  "on-brand",
+                  "input",
+                  "heading",
+                  "link",
+                  "focus",
+                  "border-strong",
+                  "selection",
+                  "selection-border",
+                  "success",
+                  "success-bg",
+                  "warning",
+                  "warning-bg",
+                  "danger",
+                  "danger-bg",
+                  "info",
+                  "info-bg",
+                  "purple",
+                  "purple-bg",
+                  "shadow",
+                  "chart-grid",
+                  "chart-overview",
+                  "chart-selection",
+                  "chart-window"
+                ],
+                "properties": {
+                  "canvas": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "surface": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "surface-raised": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "text": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "muted": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "border": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "brand": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "brand-hover": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "on-brand": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "input": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "heading": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "link": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "focus": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "border-strong": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "selection": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "selection-border": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "success": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "success-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "warning": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "warning-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "danger": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "danger-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "info": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "info-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "purple": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "purple-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "shadow": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-grid": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-overview": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-selection": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-window": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  }
+                }
+              },
+              "light": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "canvas",
+                  "surface",
+                  "surface-raised",
+                  "text",
+                  "muted",
+                  "border",
+                  "brand",
+                  "brand-hover",
+                  "on-brand",
+                  "input",
+                  "heading",
+                  "link",
+                  "focus",
+                  "border-strong",
+                  "selection",
+                  "selection-border",
+                  "success",
+                  "success-bg",
+                  "warning",
+                  "warning-bg",
+                  "danger",
+                  "danger-bg",
+                  "info",
+                  "info-bg",
+                  "purple",
+                  "purple-bg",
+                  "shadow",
+                  "chart-grid",
+                  "chart-overview",
+                  "chart-selection",
+                  "chart-window"
+                ],
+                "properties": {
+                  "canvas": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "surface": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "surface-raised": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "text": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "muted": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "border": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "brand": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "brand-hover": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "on-brand": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "input": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "heading": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "link": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "focus": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "border-strong": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "selection": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "selection-border": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "success": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "success-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "warning": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "warning-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "danger": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "danger-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "info": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "info-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "purple": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "purple-bg": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "shadow": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-grid": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-overview": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-selection": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  },
+                  "chart-window": {
+                    "type": "string",
+                    "pattern": "^#([a-fA-F0-9]{6}|[a-fA-F0-9]{8})$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

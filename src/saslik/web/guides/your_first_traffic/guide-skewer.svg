@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" role="img" aria-labelledby="title desc">
+<title id="title">Four checkpoints for your first Skewer connection</title><desc id="desc">Connect to the correct Saslik, authorize the client if a tunnel is needed, prepare CA trust for the test application, then select that application and enable routing. These are conceptual checkpoints, not a screenshot of the application.</desc>
+<rect width="1000" height="620" rx="22" fill="#101916"/>
+<g font-family="sans-serif" fill="#e7efea">
+<text x="38" y="48" font-size="15" fill="#ff8048" letter-spacing="3">02 / FIRST CONNECTION</text>
+<text x="38" y="91" font-size="31" font-weight="700">Four checks before your first request.</text>
+<g fill="#192621" stroke="#435b50"><rect x="30" y="125" width="455" height="180" rx="14"/><rect x="515" y="125" width="455" height="180" rx="14"/><rect x="30" y="330" width="455" height="180" rx="14"/><rect x="515" y="330" width="455" height="180" rx="14"/></g>
+<g fill="#ff8048" font-size="22" font-weight="700"><text x="54" y="165">1</text><text x="539" y="165">2</text><text x="54" y="370">3</text><text x="539" y="370">4</text></g>
+<g font-size="24" font-weight="700"><text x="90" y="165">Find your Saslik</text><text x="575" y="165">Authorize the tunnel</text><text x="90" y="370">Prepare HTTPS trust</text><text x="575" y="370">Select one application</text></g>
+<g font-size="20" fill="#a6b7b0">
+<text x="54" y="208">Choose “Saslik URL” and paste</text><text x="54" y="238">the URL from the Open Portal.</text><text x="54" y="274" fill="#79dfad">Verify identity when prompted.</text>
+<text x="539" y="208">If pairing is needed, use an invitation</text><text x="539" y="238">provided by the administrator.</text><text x="539" y="274" fill="#ffb18b">A discovery URL is not a credential.</text>
+<text x="54" y="413">Open “CA Trust” and check trust</text><text x="54" y="443">for the test app or browser profile.</text><text x="54" y="479" fill="#79dfad">Use the active workspace's CA.</text>
+<text x="539" y="413">Use “Selected Apps”, select your</text><text x="539" y="443">test app, then enable routing.</text><text x="539" y="479" fill="#79dfad">Check status before generating traffic.</text>
+</g>
+<text x="38" y="556" font-size="19" fill="#a6b7b0">Auto transport: a direct route when available, otherwise a supported tunnel.</text>
+<text x="38" y="587" font-size="16" fill="#7e9488">Conceptual guide · desktop control labels · not an application screenshot</text>
+</g></svg>
