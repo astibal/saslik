@@ -172,6 +172,8 @@ class LabRunner:
                 endpoints["pcap_viewer"] = (
                     f"{web}/viewer/"
                 )
+            if (self.lab / "build/smithproxy-gui/smithproxy-gui").is_file():
+                endpoints["smithproxy_gui"] = f"{web}/smithproxy-gui/"
         if (self.lab / "state/certs/default/ca-cert.pem").is_file():
             endpoints["ca_download"] = "/api/ca"
         result["endpoints"] = endpoints
@@ -227,7 +229,8 @@ class LabRunner:
         if action not in {"start", "stop", "reset", "fetch", "status", "update-component"}:
             raise ValueError("Neznámá akce.")
         if action == "update-component" and component not in {
-                "smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}:
+                "smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
+                "smithproxy-gui"}:
             raise ValueError("Neznámá komponenta.")
         branch = validate_ref(branch)
         if template not in {"spider-sift", "spider", "proxy"}:
@@ -342,6 +345,8 @@ class LabRunner:
                     workspace + ["viewer-install", str(self.lab)],
                     workspace + ["component-sync", str(self.lab), "--component", "tuntom"],
                     workspace + ["component-build", str(self.lab), "--component", "tuntom"],
+                    workspace + ["component-sync", str(self.lab), "--component", "smithproxy-gui"],
+                    workspace + ["component-build", str(self.lab), "--component", "smithproxy-gui"],
                     *([workspace + ["component-sync", str(self.lab), "--ref", branch,
                                    "--component", "lored", "--devel"],
                        workspace + ["component-build", str(self.lab),

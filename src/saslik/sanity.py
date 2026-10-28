@@ -26,6 +26,7 @@ def _processes(lab: Path, runtime: WorkspaceRuntime) -> list[str]:
         str(lab / "build/lore/lored/lored"),
         str(lab / "runtime/pcap-viewer-venv/bin/capture-viewer"),
         str(lab / "runtime/pcap-viewer-venv/bin/capture-storage"),
+        str(lab / "build/smithproxy-gui/smithproxy-gui"),
         "TCP4-LISTEN:55580", "TCP4-LISTEN:33128", "TCP4-LISTEN:55000",
         "OPENSSL-LISTEN:15173", "OPENSSL-LISTEN:15174",
         *(f"TCP4-LISTEN:{port}" for port in runtime.public_ports.values()),

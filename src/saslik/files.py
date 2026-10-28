@@ -9,11 +9,13 @@ from pathlib import Path, PurePosixPath
 LOCKED_PATHS = {
     "state/smithproxy.cfg",
     "state/state.env",
+    "state/smithproxy-gui.env",
     "state/identity-name",
     "state/workspace-settings.json",
     "state/binary-bundle.json",
 }
 LOCKED_TREES = ("state/certs",)
+SECRET_PATHS = {"state/state.env", "state/smithproxy-gui.env"}
 
 
 def relative_path(value: str) -> Path:
@@ -51,6 +53,10 @@ def is_locked(value: Path) -> bool:
         root.startswith(prefix) for root in LOCKED_TREES)
 
 
+def is_secret(value: Path) -> bool:
+    return value.as_posix() in SECRET_PATHS
+
+
 def list_directory(lab: Path, value: str = "") -> dict[str, object]:
     target, relative = target_path(lab, value)
     if not target.is_dir():
@@ -81,7 +87,9 @@ def file_revision(lab: Path, value: str) -> str:
 
 
 def read_file(lab: Path, value: str, limit: int = 2 * 1024 * 1024) -> bytes:
-    target, _ = target_path(lab, value)
+    target, relative = target_path(lab, value)
+    if is_secret(relative):
+        raise PermissionError("Secret soubor nelze číst přes Files API.")
     if not target.is_file():
         raise ValueError("Cesta není běžný soubor.")
     if target.stat().st_size > limit:

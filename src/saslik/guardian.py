@@ -21,7 +21,8 @@ from .maintenance import maintain_component_logs, repair_log_ownership
 from .runtime import WorkspaceRuntime
 
 
-UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"}
+UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
+                        "smithproxy-gui"}
 
 
 def send_response(connection: socket.socket, response: dict) -> bool:

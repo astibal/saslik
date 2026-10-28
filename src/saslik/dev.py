@@ -19,6 +19,7 @@ PROJECTS = {
     "sift": "src/sift",
     "lored": "src/lored",
     "pcap-viewer": "src/capture-zone-viewer",
+    "smithproxy-gui": "src/smithproxy-gui",
 }
 MAX_PATCH_BYTES = 1024 * 1024
 _PATCH_LOCK = threading.Lock()

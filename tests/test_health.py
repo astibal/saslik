@@ -77,6 +77,21 @@ class HealthTests(unittest.TestCase):
             tcp_check.call_args_list,
         )
 
+    @patch("saslik.health._json_check", return_value=({"state": "ok"}, {}))
+    @patch("saslik.health._http_check", return_value={"state": "ok"})
+    @patch("saslik.health._tcp_check", return_value={"state": "ok"})
+    def test_smithproxy_gui_health_is_reported_only_when_installed(
+            self, _tcp, http_check, _json):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            executable = lab / "build/smithproxy-gui/smithproxy-gui"
+            executable.parent.mkdir(parents=True)
+            executable.touch(mode=0o755)
+            value = collect(lab, namespace_address="10.240.0.42")
+        self.assertIn("smithproxy_gui", value["checks"])
+        self.assertIn(call("http://10.240.0.42:18082/healthz"),
+                      http_check.call_args_list)
+
 
 if __name__ == "__main__":
     unittest.main()

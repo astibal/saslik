@@ -145,6 +145,9 @@ class PortalSessionTests(unittest.TestCase):
                      "/guides/three_ways_in/index.html",
                      "/guides/three_ways_in/routes.css",
                      "/guides/three_ways_in/routes.js",
+                     "/guides/inside_the_inspection/index.html",
+                     "/guides/inside_the_inspection/inspection.css",
+                     "/guides/inside_the_inspection/inspection.js",
                      "/connect/ca.pem"):
             status, _, _ = self.request("GET", path)
             self.assertEqual(200, status, path)

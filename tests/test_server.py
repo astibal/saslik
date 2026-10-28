@@ -29,6 +29,19 @@ class WebLogTests(unittest.TestCase):
             self.assertEqual("proxy output\n", value["data"])
             self.assertFalse(value["truncated"])
 
+    def test_smithproxy_gui_log_is_returned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lab = root / "instances/lab1"
+            (lab / "state").mkdir(parents=True)
+            (lab / "state/smithproxy-gui.log").write_text(
+                "gui output\n", encoding="utf-8"
+            )
+
+            value = web_log_tail(root, lab, "smithproxy-gui")
+
+            self.assertEqual("gui output\n", value["data"])
+
     def test_unknown_log_source_cannot_be_used_as_a_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

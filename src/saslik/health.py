@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
 import time
@@ -144,6 +145,10 @@ def collect(lab: Path, *, include_lored: bool = False,
     if include_lored and (lab / "build/lore/lored/lored").is_file():
         checks["lored"] = lambda: _http_check(
             f"http://{namespace_address}:8091/readyz")
+    smithproxy_gui = lab / "build/smithproxy-gui/smithproxy-gui"
+    if smithproxy_gui.is_file() and os.access(smithproxy_gui, os.X_OK):
+        checks["smithproxy_gui"] = lambda: _http_check(
+            f"http://{namespace_address}:18082/healthz")
     if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
         checks["pcap_viewer"] = lambda: _http_check(
             f"https://{namespace_address}:15174{web_prefix}/viewer/readyz",

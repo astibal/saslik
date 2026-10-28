@@ -48,7 +48,7 @@ from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
 from .workspace import COMPONENT_SOURCES, component_source_status, source_changes
 from .version import saslik_version_status
-from .files import (delete_path, file_revision, list_directory, make_directory,
+from .files import (delete_path, file_revision, is_secret, list_directory, make_directory,
                     read_file, target_path, write_file)
 from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
@@ -74,6 +74,7 @@ WEB_LOG_SOURCES = {
     "sift": "sift.log",
     "pcap-storage": "pcap-storage.log",
     "pcap-viewer": "pcap-viewer.log",
+    "smithproxy-gui": "smithproxy-gui.log",
     "lored": "lored.log",
     "e2e-probe": "e2e-probe.log",
 }
@@ -1092,6 +1093,9 @@ class Handler(BaseHTTPRequestHandler):
                          "/guides/three_ways_in/index.html",
                          "/guides/three_ways_in/routes.css",
                          "/guides/three_ways_in/routes.js",
+                         "/guides/inside_the_inspection/index.html",
+                         "/guides/inside_the_inspection/inspection.css",
+                         "/guides/inside_the_inspection/inspection.js",
                          "/saslik-mark.svg", "/card-scenes/cli.png"}
         if path in public_assets:
             return self._asset(path)
@@ -1320,7 +1324,9 @@ class Handler(BaseHTTPRequestHandler):
     def _files_download(self, query: str) -> None:
         try:
             lab, value = self._file_query(query)
-            target, _ = target_path(lab, value)
+            target, relative = target_path(lab, value)
+            if is_secret(relative):
+                raise PermissionError("Secret soubor nelze stáhnout přes Files API.")
             if not target.is_file():
                 raise ValueError("Stáhnout lze pouze běžný soubor.")
             filename = target.name.replace('"', "")

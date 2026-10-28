@@ -3,12 +3,25 @@ import unittest
 from pathlib import Path
 
 from saslik.files import (
-    delete_path, is_locked, list_directory, make_directory, read_file,
+    delete_path, is_locked, is_secret, list_directory, make_directory, read_file,
     target_path, write_file,
 )
 
 
 class FilesTests(unittest.TestCase):
+    def test_secret_environment_files_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            for name in ("state.env", "smithproxy-gui.env"):
+                (state / name).write_text("SECRET=value\n", encoding="utf-8")
+                relative = Path("state") / name
+                self.assertTrue(is_locked(relative))
+                self.assertTrue(is_secret(relative))
+                with self.assertRaises(PermissionError):
+                    read_file(lab, relative.as_posix())
+
     def test_file_round_trip_and_directory_listing(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)

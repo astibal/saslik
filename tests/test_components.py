@@ -9,6 +9,76 @@ from saslik.settings import update_settings
 
 
 class ComponentTests(unittest.TestCase):
+    @staticmethod
+    def gui_lab(root: Path, key: str = "first-secret") -> Path:
+        state = root / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "state.env").write_text(
+            "SMITHPROXY_API_URL=https://10.240.0.2:55580\n"
+            f"SMITHPROXY_API_KEY={key}\n"
+            "SMITHPROXY_CA_CERT=/workspace/state/certs/default/ca-cert.pem\n"
+            "SMITHPROXY_CALLBACK_URL=http://127.0.0.1:18080/webhook\n"
+            "SPIDER_TOKEN=test\n",
+            encoding="utf-8",
+        )
+        executable = root / "build/smithproxy-gui/smithproxy-gui"
+        executable.parent.mkdir(parents=True)
+        executable.touch(mode=0o755)
+        return executable
+
+    def test_smithproxy_gui_exists_only_for_executable_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            (state / "state.env").write_text(
+                "SMITHPROXY_API_URL=https://10.240.0.2:55580\n"
+                "SMITHPROXY_API_KEY=secret\n"
+                "SMITHPROXY_CA_CERT=/ca.pem\n"
+                "SMITHPROXY_CALLBACK_URL=http://127.0.0.1:18080/webhook\n"
+                "SPIDER_TOKEN=test\n", encoding="utf-8")
+            manager = SystemdComponents(lab, "lab1")
+            self.assertFalse(any(item.name == "smithproxy-gui"
+                                 for item in manager.components()))
+            self.gui_lab(lab)
+            component = next(item for item in manager.components()
+                             if item.name == "smithproxy-gui")
+        self.assertEqual("ws-001", component.network_namespace)
+        self.assertEqual((str(lab / "build/smithproxy-gui/smithproxy-gui"),
+                          "--bind", "0.0.0.0", "--port", "18082",
+                          "--base-path", "/ws001/smithproxy-gui/"), component.command)
+        self.assertEqual((), component.environment)
+        self.assertEqual((lab / "state/smithproxy-gui.env",),
+                         component.environment_files)
+        self.assertTrue(component.restart_on_failure)
+
+    @patch("saslik.components._run")
+    def test_smithproxy_gui_secret_file_is_narrow_and_regenerated(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            self.gui_lab(lab)
+            manager = SystemdComponents(lab, "lab1")
+            component = next(item for item in manager.components()
+                             if item.name == "smithproxy-gui")
+            manager._start_component(component)
+            secret = lab / "state/smithproxy-gui.env"
+            first = secret.read_text(encoding="utf-8")
+            source = lab / "state/state.env"
+            source.write_text(source.read_text(encoding="utf-8").replace(
+                "first-secret", "rotated-secret"), encoding="utf-8")
+            manager._start_component(component)
+            second = secret.read_text(encoding="utf-8")
+            mode = secret.stat().st_mode & 0o777
+        command = run.call_args_list[-1].args[0]
+        self.assertEqual(0o600, mode)
+        self.assertIn("SMITHPROXY_API_KEY=first-secret", first)
+        self.assertIn("SMITHPROXY_API_KEY=rotated-secret", second)
+        self.assertEqual(3, len(second.strip().splitlines()))
+        self.assertNotIn("rotated-secret", " ".join(component.command))
+        self.assertNotIn("rotated-secret", " ".join(component.environment))
+        self.assertNotIn("rotated-secret", " ".join(command))
+        self.assertIn(f"--property=EnvironmentFile={secret}", command)
+
     @patch("saslik.components.urllib.request.urlopen")
     def test_storage_readiness_preserves_loopback_host_identity(self, urlopen):
         response = MagicMock()

@@ -28,6 +28,7 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("location ^~ /ws001/spider/", config)
         self.assertIn("location ^~ /ws001/spider-api/", config)
         self.assertIn("location ^~ /ws007/viewer/", config)
+        self.assertIn("location ^~ /ws001/smithproxy-gui/", config)
         self.assertIn("auth_request /__saslik_auth", config)
         self.assertIn("proxy_pass https://10.240.0.2:15173;", config)
         self.assertIn("proxy_pass https://10.240.0.50:15174;", config)
@@ -48,6 +49,11 @@ class GatewayConfigurationTests(unittest.TestCase):
             "auth_request /__saslik_auth",
             self.location(config, "/ws001/viewer/"),
         )
+        gui = self.location(config, "/ws001/smithproxy-gui/")
+        self.assertIn("auth_request /__saslik_auth", gui)
+        self.assertIn("proxy_pass http://10.240.0.2:18082;", gui)
+        self.assertIn("X-Forwarded-Prefix /ws001/smithproxy-gui", gui)
+        self.assertIn("proxy_buffering off", gui)
         self.assertIn(
             "auth_request /__saslik_api_auth",
             self.location(config, "/ws001/smithproxy-api/"),

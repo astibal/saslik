@@ -11,6 +11,7 @@ import platform
 import tarfile
 import tempfile
 import time
+import re
 from pathlib import Path
 
 from .settings import setting_value
@@ -23,6 +24,7 @@ REPOSITORIES = {
     "smithproxy": "https://github.com/astibal/smithproxy.git",
     "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
     "lored": "git@github.com:astibal/lored.git",
+    "smithproxy-gui": "https://github.com/astibal/smithproxy-gui.git",
 }
 
 COMPONENT_SOURCES = {
@@ -32,7 +34,55 @@ COMPONENT_SOURCES = {
     "sift": ("sift", "ref_sift"),
     "pcap-viewer": ("capture-zone-viewer", "ref_pcap_viewer"),
     "lored": ("lored", "ref_lored"),
+    "smithproxy-gui": ("smithproxy-gui", "ref_smithproxy_gui"),
 }
+
+
+def _node_major(executable: Path) -> int:
+    try:
+        output = subprocess.run(
+            [str(executable), "--version"], check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    match = re.fullmatch(r"v?(\d+)(?:\.\d+){1,2}", output)
+    return int(match.group(1)) if match else 0
+
+
+def smithproxy_gui_cmake_options() -> list[str]:
+    """Resolve frontend tools without depending on the caller's PATH order."""
+    node_candidates = [
+        os.environ.get("SASLIK_NODE_EXECUTABLE", ""),
+        "/usr/bin/node",
+        shutil.which("node") or "",
+    ]
+    node = next((Path(value) for value in node_candidates
+                 if value and Path(value).is_file() and _node_major(Path(value)) >= 22), None)
+    if node is None:
+        raise RuntimeError(
+            "Smithproxy GUI vyžaduje Node.js 22+. Nastav SASLIK_NODE_EXECUTABLE.")
+
+    pnpm_candidates = [
+        os.environ.get("SASLIK_PNPM_EXECUTABLE", ""),
+        shutil.which("pnpm") or "",
+        str(Path.home() / ".local/share/pnpm/pnpm"),
+    ]
+    pnpm_candidates.extend(str(path) for path in sorted(
+        (Path.home() / ".cache/codex-runtimes").glob(
+            "*/dependencies/bin/fallback/pnpm"), reverse=True))
+    pnpm = next((Path(value) for value in pnpm_candidates
+                 if value and Path(value).is_file() and os.access(value, os.X_OK)), None)
+    if pnpm is None:
+        raise RuntimeError(
+            "Smithproxy GUI vyžaduje pnpm. Nastav SASLIK_PNPM_EXECUTABLE.")
+    return [f"-DNODE_EXECUTABLE={node}", f"-DPNPM_EXECUTABLE={pnpm}"]
+
+
+def _project_options(source: Path, options: list[str]) -> list[str]:
+    if source.name != "smithproxy-gui":
+        return options
+    return [*options, *smithproxy_gui_cmake_options()]
 
 
 def component_source_status(lab: Path, component: str) -> dict[str, object]:
@@ -343,6 +393,12 @@ def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
                    "sift" in preserved)
     _sync_checkout(sources / "smithproxy", smith_repo, smithproxy_ref,
                    "smithproxy" in preserved)
+    gui_repo = os.environ.get("SASLIK_SMITHPROXY_GUI_REPOSITORY",
+                              REPOSITORIES["smithproxy-gui"])
+    if gui_repo:
+        _sync_checkout(sources / "smithproxy-gui", gui_repo,
+                       str(setting_value(lab, "ref_smithproxy_gui")),
+                       "smithproxy-gui" in preserved)
     if devel:
         lored_repo = os.environ.get("SASLIK_LORED_REPOSITORY", REPOSITORIES["lored"])
         _sync_checkout(sources / "lored", lored_repo, str(setting_value(lab, "ref_lored")),
@@ -380,6 +436,8 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
                         str(setting_value(lab, "ref_pcap_viewer"))),
         "lored": ("lored", "SASLIK_LORED_REPOSITORY",
                   str(setting_value(lab, "ref_lored"))),
+        "smithproxy-gui": ("smithproxy-gui", "SASLIK_SMITHPROXY_GUI_REPOSITORY",
+                           str(setting_value(lab, "ref_smithproxy_gui"))),
     }
     if component not in values:
         raise ValueError(f"Neznámá komponenta: {component}")
@@ -387,6 +445,9 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
         raise ValueError("Lored je dostupný pouze s --devel.")
     checkout, environment, ref = values[component]
     repository = os.environ.get(environment, REPOSITORIES[checkout])
+    if not repository:
+        print(f"Komponenta {component}: Git repository zatím není nastavené, přeskakuji sync.")
+        return
     _sync_checkout(sources / checkout, repository, ref, checkout in preserved)
     _refresh_preserved_dirty_sources(lab, preserved)
 
@@ -431,10 +492,15 @@ def build(lab: Path, *, devel: bool = False) -> None:
         (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
         (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
     ]
+    if (lab / "src/smithproxy-gui/CMakeLists.txt").is_file():
+        projects.append(
+            (lab / "src/smithproxy-gui", lab / "build/smithproxy-gui",
+             ["-DBUILD_TESTING=OFF"], "smithproxy-gui"))
     if devel:
         projects.append(
             (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"))
     for source, destination, options, target in projects:
+        options = _project_options(source, options)
         _run(["cmake", "-S", str(source), "-B", str(destination),
               f"-DCMAKE_BUILD_TYPE={build_type}", *options])
         command = ["cmake", "--build", str(destination), jobs]
@@ -477,12 +543,18 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
         "spider": (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
         "sift": (lab / "src/sift", lab / "build/sift", ["-DBUILD_TESTING=OFF"], "siftd"),
         "lored": (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"),
+        "smithproxy-gui": (lab / "src/smithproxy-gui", lab / "build/smithproxy-gui",
+                           ["-DBUILD_TESTING=OFF"], "smithproxy-gui"),
     }
     if component not in projects:
         raise ValueError(f"Neznámá komponenta: {component}")
     if component == "lored" and not devel:
         raise ValueError("Lored je dostupný pouze s --devel.")
     source, destination, options, target = projects[component]
+    if component == "smithproxy-gui" and not (source / "CMakeLists.txt").is_file():
+        print("Komponenta smithproxy-gui: zdroj zatím není připojený, přeskakuji build.")
+        return
+    options = _project_options(source, options)
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
     _run(["cmake", "-S", str(source), "-B", str(destination),
           f"-DCMAKE_BUILD_TYPE={build_type}", *options])
@@ -585,6 +657,87 @@ def _validate_ca_pair(certificate: Path, key: Path) -> None:
     ).stdout
     if cert_public != key_public:
         raise RuntimeError("CA certifikát a privátní klíč k sobě nepatří.")
+
+
+def ensure_runtime_server_certificate(lab: Path, instance: str) -> bool:
+    """Renew every Smithproxy API leaf copy when workspace addressing changed."""
+    from .runtime import WorkspaceRuntime
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
+    state = lab / "state"
+    certs = state / "certs/default"
+    certificate = certs / "srv-cert.pem"
+    key = certs / "srv-key.pem"
+    portal_certificate = certs / "portal-cert.pem"
+    portal_key = certs / "portal-key.pem"
+    ca_certificate = certs / "ca-cert.pem"
+    ca_key = certs / "ca-key.pem"
+    for required in (ca_certificate, ca_key):
+        if not required.is_file():
+            raise RuntimeError(f"Serverový certifikát nelze obnovit, chybí {required}.")
+
+    addresses = (runtime.namespace_address, runtime.host_address)
+    server_current = certificate.is_file() and key.is_file() and all(
+            subprocess.run(
+                ["openssl", "x509", "-in", str(certificate), "-noout", "-checkip", address],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            ).returncode == 0 for address in addresses)
+    portal_current = (
+        portal_certificate.is_file()
+        and portal_key.is_file()
+        and portal_certificate.read_bytes() == certificate.read_bytes()
+        and portal_key.read_bytes() == key.read_bytes()
+    ) if server_current else False
+    if server_current and portal_current:
+        return False
+
+    if server_current:
+        # The leaf already matches the Network Plan, but an older Saslik may
+        # have left the portal/API listener on a stale copy.
+        with tempfile.TemporaryDirectory(prefix=".portal-cert-", dir=state) as directory:
+            work = Path(directory)
+            staged_key = work / "portal-key.pem"
+            staged_certificate = work / "portal-cert.pem"
+            shutil.copy2(key, staged_key)
+            shutil.copy2(certificate, staged_certificate)
+            staged_key.chmod(0o600)
+            os.replace(staged_key, portal_key)
+            os.replace(staged_certificate, portal_certificate)
+        return True
+
+    with tempfile.TemporaryDirectory(prefix=".server-cert-", dir=state) as directory:
+        work = Path(directory)
+        new_key = work / "srv-key.pem"
+        request = work / "server.csr"
+        extensions = work / "server.ext"
+        new_certificate = work / "srv-cert.pem"
+        _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", str(new_key),
+                 "-out", str(request), "-subj", "/CN=smithproxy-test")
+        extensions.write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
+            f"subjectAltName=DNS:smithproxy-test,IP:{runtime.namespace_address},"
+            f"IP:{runtime.host_address}\n",
+            encoding="ascii",
+        )
+        _openssl("x509", "-req", "-in", str(request), "-CA", str(ca_certificate),
+                 "-CAkey", str(ca_key), "-CAcreateserial", "-out", str(new_certificate),
+                 "-days", "365", "-sha256", "-extfile", str(extensions))
+        new_key.chmod(0o600)
+        # Smithproxy's portal/API listener uses the portal-* paths, while
+        # other listeners use srv-*.  Stage a complete matching set before
+        # replacing any live file so a failed copy never leaves mixed leafs.
+        staged = {
+            key: new_key,
+            certificate: new_certificate,
+            portal_key: work / "portal-key.pem",
+            portal_certificate: work / "portal-cert.pem",
+        }
+        shutil.copy2(new_key, staged[portal_key])
+        shutil.copy2(new_certificate, staged[portal_certificate])
+        for destination, source in staged.items():
+            os.replace(source, destination)
+    return True
 
 
 def initialize_state(lab: Path, template: str = "spider-sift", *,
@@ -749,8 +902,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "init":
             created = initialize_state(args.lab, args.template, instance=args.instance,
                                        ca_cert=args.ca_cert, ca_key=args.ca_key)
+            renewed = ensure_runtime_server_certificate(args.lab, args.instance)
             print("Nový persistentní config a CA vytvořeny." if created
                   else "Persistentní config a CA zachovány beze změny.")
+            if renewed:
+                print("Serverové certifikáty obnoveny pro aktuální Network Plan.")
         elif args.action == "bundle-clear":
             (args.lab / "state/binary-bundle.json").unlink(missing_ok=True)
         elif args.action == "discard-changes":

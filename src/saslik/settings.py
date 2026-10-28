@@ -38,6 +38,7 @@ SETTINGS = {
     "restart_pcap_viewer": {"label": "PCAP Viewer", "secret": False, "default": True},
     "restart_pcap_storage": {"label": "Capture storage", "secret": False, "default": True},
     "restart_lored": {"label": "Lored", "secret": False, "default": True},
+    "restart_smithproxy_gui": {"label": "Smithproxy GUI", "secret": False, "default": True},
     "debug_build": {"label": "Debug build", "secret": False, "default": False},
     "collect_coredumps": {"label": "Uložit core dump", "secret": False, "default": True},
     "collect_backtraces": {"label": "Vygenerovat backtrace", "secret": False, "default": True},
@@ -51,6 +52,10 @@ SETTINGS = {
     "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "main"},
     "source_lored": {"label": "Lored source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_lored": {"label": "Lored branch / ref", "secret": False, "default": "main"},
+    "source_smithproxy_gui": {"label": "Smithproxy GUI source", "secret": False,
+                              "default": "src", "choices": ("src",)},
+    "ref_smithproxy_gui": {"label": "Smithproxy GUI branch / ref", "secret": False,
+                           "default": "main"},
 }
 
 

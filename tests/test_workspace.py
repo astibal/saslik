@@ -11,11 +11,90 @@ from saslik.workspace import (
     _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
     _worktree_matches_ref,
     component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
-    save_binary_bundle, source_changes,
+    ensure_runtime_server_certificate, save_binary_bundle,
+    smithproxy_gui_cmake_options, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_runtime_certificate_renewal_updates_portal_api_copy(self):
+        class Runtime:
+            namespace_address = "10.240.0.2"
+            host_address = "10.240.0.1"
+
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            certs = lab / "state/certs/default"
+            certs.mkdir(parents=True)
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(certs / "ca-key.pem"),
+                "-out", str(certs / "ca-cert.pem"), "-days", "1",
+                "-subj", "/CN=Saslik test CA",
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            with patch("saslik.runtime.WorkspaceRuntime.for_workspace",
+                       return_value=Runtime()):
+                self.assertTrue(ensure_runtime_server_certificate(lab, "lab1"))
+
+            self.assertEqual((certs / "srv-cert.pem").read_bytes(),
+                             (certs / "portal-cert.pem").read_bytes())
+            self.assertEqual((certs / "srv-key.pem").read_bytes(),
+                             (certs / "portal-key.pem").read_bytes())
+            self.assertEqual(0o600, (certs / "portal-key.pem").stat().st_mode & 0o777)
+
+    def test_runtime_certificate_repairs_only_stale_portal_copy(self):
+        class Runtime:
+            namespace_address = "10.240.0.2"
+            host_address = "10.240.0.1"
+
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            source = lab / "state/certs/default"
+            source.mkdir(parents=True)
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(source / "ca-key.pem"),
+                "-out", str(source / "ca-cert.pem"), "-days", "1",
+                "-subj", "/CN=Saslik test CA",
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with patch("saslik.runtime.WorkspaceRuntime.for_workspace",
+                       return_value=Runtime()):
+                self.assertTrue(ensure_runtime_server_certificate(lab, "lab1"))
+                serial = subprocess.check_output([
+                    "openssl", "x509", "-in", str(source / "srv-cert.pem"),
+                    "-noout", "-serial",
+                ])
+                (source / "portal-cert.pem").write_text("stale\n", encoding="ascii")
+                (source / "portal-key.pem").write_text("stale\n", encoding="ascii")
+                self.assertTrue(ensure_runtime_server_certificate(lab, "lab1"))
+
+            self.assertEqual(serial, subprocess.check_output([
+                "openssl", "x509", "-in", str(source / "srv-cert.pem"),
+                "-noout", "-serial",
+            ]))
+            self.assertEqual((source / "srv-cert.pem").read_bytes(),
+                             (source / "portal-cert.pem").read_bytes())
+            self.assertEqual((source / "srv-key.pem").read_bytes(),
+                             (source / "portal-key.pem").read_bytes())
+
+    def test_gui_build_uses_explicit_node_and_pnpm_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            node = root / "node"
+            pnpm = root / "pnpm"
+            node.write_text("#!/bin/sh\necho v22.22.1\n", encoding="utf-8")
+            pnpm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            node.chmod(0o755)
+            pnpm.chmod(0o755)
+            with patch.dict(os.environ, {
+                    "SASLIK_NODE_EXECUTABLE": str(node),
+                    "SASLIK_PNPM_EXECUTABLE": str(pnpm),
+            }):
+                options = smithproxy_gui_cmake_options()
+        self.assertEqual([f"-DNODE_EXECUTABLE={node}",
+                          f"-DPNPM_EXECUTABLE={pnpm}"], options)
+
     def test_abandoned_git_index_lock_is_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)

@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +26,10 @@ from .settings import component_environment, component_restart_on_failure, setti
 
 SPIDER_FRONTEND_PORT = 25173
 PCAP_VIEWER_PORT = 25174
+SMITHPROXY_GUI_PORT = 18082
+SMITHPROXY_GUI_ENV_KEYS = (
+    "SMITHPROXY_API_URL", "SMITHPROXY_API_KEY", "SMITHPROXY_CA_CERT",
+)
 
 
 def _run(command: list[str], *, tolerate: bool = False,
@@ -54,6 +59,35 @@ def _state_env(lab: Path) -> dict[str, str]:
             key, value = line.split("=", 1)
             result[key] = value
     return result
+
+
+def write_smithproxy_gui_environment(lab: Path) -> Path:
+    """Atomically derive the GUI's narrow credential file from workspace state."""
+    values = _state_env(lab)
+    missing = [key for key in SMITHPROXY_GUI_ENV_KEYS if not values.get(key)]
+    if missing:
+        raise RuntimeError("state.env neobsahuje GUI hodnoty: " + ", ".join(missing))
+    for key in SMITHPROXY_GUI_ENV_KEYS:
+        if any(character in values[key] for character in "\r\n\0"):
+            raise RuntimeError(f"state.env obsahuje neplatnou hodnotu {key}.")
+    state = lab / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    destination = state / "smithproxy-gui.env"
+    descriptor, temporary = tempfile.mkstemp(prefix=".smithproxy-gui.env.", dir=state)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            for key in SMITHPROXY_GUI_ENV_KEYS:
+                stream.write(f"{key}={values[key]}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return destination
 
 
 @dataclass(frozen=True)
@@ -114,7 +148,10 @@ class SystemdComponents:
         return self.runtime.slice_name
 
     def component_names(self) -> tuple[str, ...]:
-        return self.BASE_COMPONENT_NAMES + (
+        optional = (("smithproxy-gui",)
+                    if os.access(self.lab / "build/smithproxy-gui/smithproxy-gui", os.X_OK)
+                    else ())
+        return self.BASE_COMPONENT_NAMES + optional + (
             self.DEVEL_COMPONENT_NAMES if self.devel else ())
 
     @property
@@ -175,6 +212,7 @@ class SystemdComponents:
         pcap_viewer = self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
         pcap_storage = self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"
         lored = self.lab / "build/lore/lored/lored"
+        smithproxy_gui = self.lab / "build/smithproxy-gui/smithproxy-gui"
         config = self.state / "smithproxy.cfg"
         socat = shutil.which("socat") or "socat"
         python = sys.executable
@@ -287,6 +325,17 @@ class SystemdComponents:
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
             result.append(tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
+        if smithproxy_gui.is_file() and os.access(smithproxy_gui, os.X_OK):
+            result.append(Component(
+                "smithproxy-gui",
+                (str(smithproxy_gui), "--bind", "0.0.0.0", "--port",
+                 str(SMITHPROXY_GUI_PORT), "--base-path",
+                 f"{self.runtime.web_prefix}/smithproxy-gui/"),
+                self.state / "smithproxy-gui.log",
+                network_namespace=namespace,
+                restart_on_failure=component_restart_on_failure(self.lab, "smithproxy-gui"),
+                environment_files=(self.state / "smithproxy-gui.env",),
+            ))
         result.extend([
                 Component(
                     "spider",
@@ -450,6 +499,7 @@ class SystemdComponents:
             self.lab / "build/lore/lored/lored",
             self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer",
             self.lab / "runtime/pcap-viewer-venv/bin/capture-storage",
+            self.lab / "build/smithproxy-gui/smithproxy-gui",
         )
         return self._saslik_forwarder_command(command) or any(
             str(executable) in command for executable in executables
@@ -522,6 +572,8 @@ class SystemdComponents:
 
     def _start_component(self, component: Component,
                          runtime_command: tuple[str, ...] | None = None) -> None:
+        if component.name == "smithproxy-gui":
+            write_smithproxy_gui_environment(self.lab)
         if runtime_command is None:
             runtime_command = self._licensed_command(component)
         component.log.parent.mkdir(parents=True, exist_ok=True)
@@ -543,7 +595,8 @@ class SystemdComponents:
         ]
         if component.restart_on_failure:
             command.append("--property=RestartSec=500ms")
-        crash_components = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "pcap-storage"}
+        crash_components = {"smithproxy", "spider", "sift", "lored", "pcap-viewer",
+                            "pcap-storage", "smithproxy-gui"}
         if component.name in crash_components:
             collect_core = setting_value(self.lab, "collect_coredumps") is True
             command.append(f"--property=LimitCORE={'infinity' if collect_core else '0'}")
@@ -640,6 +693,7 @@ class SystemdComponents:
             "lored": ("lored", "lored-bridge"),
             "pcap-viewer": ("pcap-storage", "pcap-storage-bridge", "expose-pcap-storage",
                             "pcap-viewer", "pcap-viewer-tls"),
+            "smithproxy-gui": ("smithproxy-gui",),
         }
         try:
             return groups[component]
@@ -727,6 +781,8 @@ class SystemdComponents:
                        {}, True))
         if "lored" in running_components:
             checks.append((f"http://{address}:8091/readyz", {}, False))
+        if "smithproxy-gui" in running_components:
+            checks.append((f"http://{address}:{SMITHPROXY_GUI_PORT}/healthz", {}, False))
         if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
             # Exercise the real path.  Viewer binds the workspace loopback;
             # the namespace TLS relay is the only intentional ingress.
@@ -812,7 +868,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance", default="default")
     parser.add_argument("--expose-address", default="127.0.0.1")
     parser.add_argument("--devel", action="store_true")
-    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom"))
+    parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored",
+                                                 "pcap-viewer", "tuntom", "smithproxy-gui"))
     args = parser.parse_args(argv)
     manager = SystemdComponents(args.lab, args.instance, args.expose_address, devel=args.devel)
     try:
