@@ -56,6 +56,10 @@ SETTINGS = {
                               "default": "src", "choices": ("src",)},
     "ref_smithproxy_gui": {"label": "Smithproxy GUI branch / ref", "secret": False,
                            "default": "main"},
+    "source_keyway": {"label": "Smithproxy Keyway source", "secret": False,
+                       "default": "src", "choices": ("src",)},
+    "ref_keyway": {"label": "Smithproxy Keyway branch / ref", "secret": False,
+                    "default": "main"},
 }
 
 

@@ -137,6 +137,10 @@ class RunnerTests(unittest.TestCase):
                             for command in commands))
         self.assertTrue(any("component-build" in command and "--component lored" in command
                             for command in commands))
+        self.assertTrue(any("component-sync" in command and "--component keyway" in command
+                            for command in commands))
+        self.assertTrue(any("component-build" in command and "--component keyway" in command
+                            for command in commands))
         self.assertFalse(any("saslik.workspace build" in command for command in commands))
 
     def test_lored_is_absent_without_devel_mode(self):

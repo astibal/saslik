@@ -25,6 +25,7 @@ REPOSITORIES = {
     "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
     "lored": "git@github.com:astibal/lored.git",
     "smithproxy-gui": "https://github.com/astibal/smithproxy-gui.git",
+    "smithproxy-keyway": "https://github.com/astibal/smithproxy-keyway.git",
 }
 
 COMPONENT_SOURCES = {
@@ -35,6 +36,7 @@ COMPONENT_SOURCES = {
     "pcap-viewer": ("capture-zone-viewer", "ref_pcap_viewer"),
     "lored": ("lored", "ref_lored"),
     "smithproxy-gui": ("smithproxy-gui", "ref_smithproxy_gui"),
+    "keyway": ("smithproxy-keyway", "ref_keyway"),
 }
 
 
@@ -399,6 +401,12 @@ def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
         _sync_checkout(sources / "smithproxy-gui", gui_repo,
                        str(setting_value(lab, "ref_smithproxy_gui")),
                        "smithproxy-gui" in preserved)
+    keyway_repo = os.environ.get("SASLIK_KEYWAY_REPOSITORY",
+                                 REPOSITORIES["smithproxy-keyway"])
+    if keyway_repo:
+        _sync_checkout(sources / "smithproxy-keyway", keyway_repo,
+                       str(setting_value(lab, "ref_keyway")),
+                       "smithproxy-keyway" in preserved)
     if devel:
         lored_repo = os.environ.get("SASLIK_LORED_REPOSITORY", REPOSITORIES["lored"])
         _sync_checkout(sources / "lored", lored_repo, str(setting_value(lab, "ref_lored")),
@@ -438,6 +446,8 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
                   str(setting_value(lab, "ref_lored"))),
         "smithproxy-gui": ("smithproxy-gui", "SASLIK_SMITHPROXY_GUI_REPOSITORY",
                            str(setting_value(lab, "ref_smithproxy_gui"))),
+        "keyway": ("smithproxy-keyway", "SASLIK_KEYWAY_REPOSITORY",
+                   str(setting_value(lab, "ref_keyway"))),
     }
     if component not in values:
         raise ValueError(f"Neznámá komponenta: {component}")
@@ -496,6 +506,10 @@ def build(lab: Path, *, devel: bool = False) -> None:
         projects.append(
             (lab / "src/smithproxy-gui", lab / "build/smithproxy-gui",
              ["-DBUILD_TESTING=OFF"], "smithproxy-gui"))
+    if (lab / "src/smithproxy-keyway/CMakeLists.txt").is_file():
+        projects.append(
+            (lab / "src/smithproxy-keyway", lab / "build/smithproxy-keyway",
+             ["-DBUILD_TESTING=OFF"], "smithproxy-keyway"))
     if devel:
         projects.append(
             (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"))
@@ -545,6 +559,8 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
         "lored": (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"),
         "smithproxy-gui": (lab / "src/smithproxy-gui", lab / "build/smithproxy-gui",
                            ["-DBUILD_TESTING=OFF"], "smithproxy-gui"),
+        "keyway": (lab / "src/smithproxy-keyway", lab / "build/smithproxy-keyway",
+                   ["-DBUILD_TESTING=OFF"], "smithproxy-keyway"),
     }
     if component not in projects:
         raise ValueError(f"Neznámá komponenta: {component}")

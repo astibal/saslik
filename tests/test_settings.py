@@ -70,6 +70,7 @@ class WorkspaceSettingsTests(unittest.TestCase):
             self.assertFalse(public_settings(lab)["restart_smithproxy"]["value"])
             self.assertTrue(component_restart_on_failure(lab, "lored"))
             self.assertEqual("main", setting_value(lab, "ref_lored"))
+            self.assertEqual("main", setting_value(lab, "ref_keyway"))
 
     def test_debug_and_crash_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

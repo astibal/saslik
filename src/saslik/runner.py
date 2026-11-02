@@ -347,6 +347,8 @@ class LabRunner:
                     workspace + ["component-build", str(self.lab), "--component", "tuntom"],
                     workspace + ["component-sync", str(self.lab), "--component", "smithproxy-gui"],
                     workspace + ["component-build", str(self.lab), "--component", "smithproxy-gui"],
+                    workspace + ["component-sync", str(self.lab), "--component", "keyway"],
+                    workspace + ["component-build", str(self.lab), "--component", "keyway"],
                     *([workspace + ["component-sync", str(self.lab), "--ref", branch,
                                    "--component", "lored", "--devel"],
                        workspace + ["component-build", str(self.lab),
