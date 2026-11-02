@@ -123,6 +123,10 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                             manager.stop_component(component)
                         else:
                             manager.restart_component(component)
+                    elif payload.get("action") == "probe-config":
+                        SystemdComponents(*target, devel=devel).apply_probe_settings()
+                    elif payload.get("action") == "probe-run":
+                        SystemdComponents(*target, devel=devel).run_probe_once()
                     elif payload.get("action") == "maintenance":
                         repair_log_ownership(root, owner_uid)
                         maintain_component_logs(root)

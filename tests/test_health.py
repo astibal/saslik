@@ -4,10 +4,37 @@ from pathlib import Path
 
 from unittest.mock import call, patch
 
-from saslik.health import _json_check, collect, interface_counters
+from saslik.health import (_json_check, collect, end_to_end_status,
+                           interface_counters)
+from saslik.probe_settings import save as save_probe_settings
 
 
 class HealthTests(unittest.TestCase):
+    @patch("saslik.health.time.time", return_value=100)
+    def test_manual_probe_result_expires_after_thirty_seconds(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "state").mkdir()
+            save_probe_settings(lab / "state", "probe.example", False, 60)
+            (lab / "state/e2e-health.json").write_text(
+                '{"sampled_at":69,"target":"probe.example","checks":{}}',
+                encoding="utf-8")
+            value = end_to_end_status(lab)
+        self.assertTrue(value["stale"])
+        self.assertFalse(value["enabled"])
+
+    @patch("saslik.health.time.time", return_value=100)
+    def test_periodic_probe_ttl_tracks_longer_interval(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "state").mkdir()
+            save_probe_settings(lab / "state", "probe.example", True, 60)
+            (lab / "state/e2e-health.json").write_text(
+                '{"sampled_at":0,"target":"probe.example","checks":{}}',
+                encoding="utf-8")
+            value = end_to_end_status(lab)
+        self.assertFalse(value["stale"])
+        self.assertEqual(60, value["interval"])
     def test_interface_counters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

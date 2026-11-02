@@ -10,6 +10,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .probe_settings import data_root_for_lab, load as load_probe_settings
+
 
 def _state_env(lab: Path) -> dict[str, str]:
     result: dict[str, str] = {}
@@ -106,16 +108,19 @@ def interface_counters(interface: str = "ws001h", *, sysfs: Path = Path("/sys/cl
 
 
 def end_to_end_status(lab: Path) -> dict[str, object]:
+    settings = load_probe_settings(data_root_for_lab(lab))
     path = lab / "state/e2e-health.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("výsledek není objekt")
     except (OSError, ValueError, json.JSONDecodeError):
-        return {"available": False, "stale": False, "checks": {}}
+        return {"available": False, "stale": True, "checks": {}, **settings}
     sampled_at = value.get("sampled_at")
-    stale = not isinstance(sampled_at, (int, float)) or time.time() - sampled_at > 45
-    return {"available": True, "stale": stale, **value}
+    ttl = max(45, int(settings["interval"]) * 3) if settings["enabled"] else 30
+    stale = (not isinstance(sampled_at, (int, float)) or
+             time.time() - sampled_at > ttl)
+    return {"available": True, **value, **settings, "stale": stale}
 
 
 def collect(lab: Path, *, include_lored: bool = False,

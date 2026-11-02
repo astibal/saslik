@@ -21,6 +21,7 @@ from pathlib import Path
 from .licensing import (DEFAULT_ISSUER, EntitlementMissing, LicensingError,
                         bootstrap_issuer, install_issuer, license_grant)
 from .gateway_secret import ensure_gateway_secret
+from .probe_settings import data_root_for_lab, load as load_probe_settings
 from .runtime import WorkspaceRuntime
 from .settings import component_environment, component_restart_on_failure, setting_value
 
@@ -134,7 +135,7 @@ class SystemdComponents:
         "frontend", "frontend-tls", "pcap-storage", "pcap-viewer",
         "pcap-viewer-tls", "expose-api", "expose-proxy", "expose-socks", "expose-sift",
         "expose-spider", "expose-frontend", "expose-pcap-storage",
-        "expose-pcap-viewer", "pcap-storage-bridge", "e2e-probe",
+        "expose-pcap-viewer", "pcap-storage-bridge", "e2e-probe", "e2e-probe-once",
     )
     DEVEL_COMPONENT_NAMES = ("lored", "lored-bridge", "expose-lored")
 
@@ -389,15 +390,46 @@ class SystemdComponents:
                 self.state / f"expose-{name}.log",
                 restart_on_failure=True,
             ))
-        result.append(Component(
-            "e2e-probe",
-            (python, "-m", "saslik.probe", "--output", str(self.state / "e2e-health.json"),
-             "--ca", str(self.state / "certs/default/ca-cert.pem"),
-             "--gateway", self.runtime.probe_gateway),
-            self.state / "e2e-probe.log",
-            network_namespace=probe_namespace,
-        ))
+        probe_settings = load_probe_settings(data_root_for_lab(self.lab))
+        if probe_settings["enabled"]:
+            result.append(self._probe_component(
+                "e2e-probe", target=str(probe_settings["target"]),
+                interval=int(probe_settings["interval"])))
         return result
+
+    def _probe_component(self, name: str, *, target: str,
+                         interval: int, once: bool = False) -> Component:
+        command = [sys.executable, "-m", "saslik.probe", "--output",
+                   str(self.state / "e2e-health.json"), "--ca",
+                   str(self.state / "certs/default/ca-cert.pem"), "--gateway",
+                   self.runtime.probe_gateway, "--target", target,
+                   "--interval", str(interval)]
+        if once:
+            command.append("--once")
+        return Component(name, tuple(command), self.state / "e2e-probe.log",
+                         network_namespace=self.runtime.probe_namespace)
+
+    def apply_probe_settings(self) -> None:
+        """Replace only the synthetic probe; other workspace services keep running."""
+        for name in ("e2e-probe", "e2e-probe-once"):
+            _run(["systemctl", "stop", self.runtime.unit_name(name)],
+                 tolerate=True, quiet=True)
+            _run(["systemctl", "reset-failed", self.runtime.unit_name(name)],
+                 tolerate=True, quiet=True)
+        settings = load_probe_settings(data_root_for_lab(self.lab))
+        if (settings["enabled"] and
+                Path(f"/run/netns/{self.runtime.probe_namespace}").exists()):
+            self._start_component(self._probe_component(
+                "e2e-probe", target=str(settings["target"]),
+                interval=int(settings["interval"])))
+
+    def run_probe_once(self) -> None:
+        if not Path(f"/run/netns/{self.runtime.probe_namespace}").exists():
+            raise RuntimeError("Workspace neběží; test nelze spustit.")
+        settings = load_probe_settings(data_root_for_lab(self.lab))
+        self._start_component(self._probe_component(
+            "e2e-probe-once", target=str(settings["target"]),
+            interval=int(settings["interval"]), once=True))
 
     def _check_assets(self) -> None:
         required = [

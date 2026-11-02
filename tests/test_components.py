@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from saslik.components import Component, SystemdComponents
+from saslik.probe_settings import save as save_probe_settings
 from saslik.runtime import WorkspaceRuntime
 from saslik.settings import update_settings
 
@@ -371,6 +372,33 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(workspace_services)
         self.assertTrue(all(item.network_namespace == "ws-001"
                             for item in workspace_services))
+
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_periodic_probe_can_be_disabled_without_removing_other_services(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            save_probe_settings(lab / "state", "internal.example", False, 60)
+            components = SystemdComponents(lab, "workspace").components()
+        self.assertFalse(any(item.name == "e2e-probe" for item in components))
+        self.assertTrue(any(item.name == "smithproxy" for item in components))
+
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_probe_uses_configured_target_and_interval(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            save_probe_settings(lab / "state", "probe.example", True, 90)
+            probe = next(item for item in SystemdComponents(lab, "workspace").components()
+                         if item.name == "e2e-probe")
+        self.assertIn("probe.example", probe.command)
+        self.assertIn("90", probe.command)
 
     def test_generated_host_callbacks_migrate_to_workspace_loopback(self):
         with tempfile.TemporaryDirectory() as directory:

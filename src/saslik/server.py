@@ -59,6 +59,7 @@ from .runtime import ADDRESS_POOL, WorkspaceRuntime
 from .api_access import access_allowed
 from .network_plan import (NetworkPlan, connected_networks,
                            load as load_network_plan, save as save_network_plan)
+from .probe_settings import load as load_probe_settings, save as save_probe_settings
 from .pairing import PairingStore, PskServer
 from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
@@ -1154,6 +1155,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({**self.server.network_plan.as_dict(),
                                "connected_networks": [str(item) for item in connected_networks()],
                                "busy": self.server.network_plan_busy()})
+        if path == "/api/probe-settings":
+            return self._json(load_probe_settings(self.server.data_root))
         if path == "/api/identity":
             services = self.server.runner._service_status()
             running = self.server.runner.operation_running() or any(
@@ -1565,7 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
                         "/api/account/password", "/api/public-installers",
-                        "/api/network-plan"}:
+                        "/api/network-plan", "/api/probe-settings", "/api/probe/run"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -1577,6 +1580,34 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/probe-settings":
+                previous = load_probe_settings(self.server.data_root)
+                value = save_probe_settings(
+                    self.server.data_root, body.get("target", ""),
+                    body.get("enabled"), body.get("interval"))
+                if not value["enabled"] or value["target"] != previous["target"]:
+                    (self.server.runner.lab / "state/e2e-health.json").unlink(missing_ok=True)
+                result = self.server.guardian_exchange("probe-config")
+                if not result.get("ok"):
+                    return self._json(
+                        {"error": result.get("error", "Probe nelze překonfigurovat.")},
+                        HTTPStatus.SERVICE_UNAVAILABLE)
+                self.server.runner._health_cache = (0.0, {})
+                return self._json({"ok": True, **value})
+            if path == "/api/probe/run":
+                before = 0.0
+                result_path = self.server.runner.lab / "state/e2e-health.json"
+                try:
+                    before = result_path.stat().st_mtime
+                except OSError:
+                    pass
+                result = self.server.guardian_exchange("probe-run")
+                if not result.get("ok"):
+                    return self._json(
+                        {"error": result.get("error", "Test nelze spustit.")},
+                        HTTPStatus.SERVICE_UNAVAILABLE)
+                return self._json({"ok": True, "started": time.time(), "previous": before},
+                                  HTTPStatus.ACCEPTED)
             if path == "/api/network-plan":
                 if self.server.network_plan_busy():
                     return self._json(
