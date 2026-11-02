@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -15,6 +16,8 @@ PORTAL_USER = "saslik"
 SCRYPT_N = 1 << 14
 SCRYPT_R = 8
 SCRYPT_P = 1
+THEME_ID = re.compile(r"^[a-z][a-z0-9-]{0,47}$")
+THEME_MODES = {"dark", "light", "system"}
 
 
 def _password_record(password: str) -> dict[str, str | int]:
@@ -34,14 +37,16 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, password: dict | None, *, password_changed_at: float | None = None,
-           last_login_at: float | None = None) -> None:
+           last_login_at: float | None = None,
+           appearance: dict[str, str] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix=".portal-credentials-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump({"username": PORTAL_USER, "password": password,
                        "password_changed_at": password_changed_at,
-                       "last_login_at": last_login_at}, stream)
+                       "last_login_at": last_login_at,
+                       "appearance": appearance}, stream)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -75,7 +80,8 @@ def ensure_portal_credentials(root: Path) -> tuple[str, bool, Path]:
         if isinstance(password, str) and len(password) >= 12:
             _write(path, _password_record(password),
                    password_changed_at=value.get("password_changed_at") or time.time(),
-                   last_login_at=value.get("last_login_at"))
+                   last_login_at=value.get("last_login_at"),
+                   appearance=_valid_appearance(value.get("appearance")))
             return PORTAL_USER, True, path
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         pass
@@ -103,11 +109,14 @@ def set_portal_password(path: Path, password: str) -> None:
     if not 12 <= len(password) <= 128:
         raise ValueError("Password must contain between 12 and 128 characters.")
     try:
-        last_login_at = _read(path).get("last_login_at")
+        value = _read(path)
+        last_login_at = value.get("last_login_at")
+        appearance = _valid_appearance(value.get("appearance"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         last_login_at = None
+        appearance = None
     _write(path, _password_record(password), password_changed_at=time.time(),
-           last_login_at=last_login_at)
+           last_login_at=last_login_at, appearance=appearance)
 
 
 def record_portal_login(path: Path) -> float:
@@ -115,7 +124,8 @@ def record_portal_login(path: Path) -> float:
     value = _read(path)
     login_at = time.time()
     _write(path, value.get("password"),
-           password_changed_at=value.get("password_changed_at"), last_login_at=login_at)
+           password_changed_at=value.get("password_changed_at"), last_login_at=login_at,
+           appearance=_valid_appearance(value.get("appearance")))
     return login_at
 
 
@@ -126,3 +136,32 @@ def portal_account_info(path: Path) -> dict[str, float | None]:
         return {"last_login_at": None, "password_changed_at": None}
     return {key: value.get(key) if isinstance(value.get(key), (int, float)) else None
             for key in ("last_login_at", "password_changed_at")}
+
+
+def _valid_appearance(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    palette, mode = value.get("palette"), value.get("mode")
+    if not isinstance(palette, str) or not THEME_ID.fullmatch(palette):
+        return None
+    if mode not in THEME_MODES:
+        return None
+    return {"palette": palette, "mode": mode}
+
+
+def portal_appearance(path: Path) -> dict[str, str] | None:
+    try:
+        return _valid_appearance(_read(path).get("appearance"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def set_portal_appearance(path: Path, appearance: object) -> dict[str, str]:
+    valid = _valid_appearance(appearance)
+    if valid is None:
+        raise ValueError("Invalid appearance preference.")
+    value = _read(path)
+    _write(path, value.get("password"),
+           password_changed_at=value.get("password_changed_at"),
+           last_login_at=value.get("last_login_at"), appearance=valid)
+    return valid

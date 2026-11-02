@@ -14,10 +14,13 @@ Use **◐ Appearance / Vzhled** in the application header (lower-right on pages 
 - Import/export the version 1 JSON catalog; reload the installed catalog.
 - Reset to Grill/Dark.
 
-Preferences are local to the browser, not server-side account settings. Applications
-served from the same origin share the selection via localStorage/storage events;
-separate hosts/ports retain independent preferences but accept identical JSON.
-No cookies, credentials, connection settings or traffic data are synchronized.
+Applications served from the same origin share the selection via
+localStorage/storage events; separate hosts/ports retain independent preferences but
+accept identical JSON. Saslik additionally stores the effective palette and mode in
+the local administrator profile and in the anonymous `saslik_theme` cookie. This
+lets the public login page use the same appearance before authentication. The cookie
+contains only `<palette>.<mode>`; it contains no identity, credentials, connection
+settings or traffic data. Custom palette contents remain browser-local.
 
 Every page paints from the last valid catalog (or embedded Grill/Dark), then checks
 its adjacent `saslik-palettes.json`. Edit that JSON and reload the page or use Reload.

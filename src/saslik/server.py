@@ -25,7 +25,8 @@ import zipfile
 from .licensing import (LicensingError, licensing_report, tunnel_features,
                         workspace_issuer_status)
 from .portal_auth import (ensure_portal_credentials, portal_account_info,
-                          record_portal_login, set_portal_password,
+                          portal_appearance, record_portal_login,
+                          set_portal_appearance, set_portal_password,
                           verify_portal_password)
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -68,6 +69,8 @@ from .maintenance import LOG_BACKUPS, PROCESS_LOG_LIMIT, RotatingLog, save_logpa
 
 
 SASLIK_LOG_TAIL_BYTES = 256 * 1024
+ASSET_REFERENCE = re.compile(
+    r'((?:src|href)=")((?!//)[^":?]+\.(?:js|css))(")', re.IGNORECASE)
 WEB_LOG_SOURCES = {
     "smithproxy": "smithproxy.log",
     "spider": "spider.log",
@@ -79,6 +82,29 @@ WEB_LOG_SOURCES = {
     "lored": "lored.log",
     "e2e-probe": "e2e-probe.log",
 }
+
+
+def asset_digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def versioned_html(data: bytes, name: str) -> bytes:
+    """Attach per-file content versions without requiring a frontend build step."""
+    root = files("saslik.web")
+    parent = PurePosixPath(name).parent
+
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2)
+        relative = PurePosixPath(reference.lstrip("/")) if reference.startswith("/") \
+            else parent / reference
+        if ".." in relative.parts:
+            return match.group(0)
+        target = root.joinpath(str(relative))
+        if not target.is_file():
+            return match.group(0)
+        return f"{match.group(1)}{reference}?v={asset_digest(target.read_bytes())}{match.group(3)}"
+
+    return ASSET_REFERENCE.sub(replace, data.decode("utf-8")).encode("utf-8")
 
 
 def log_tail(path: Path, limit: int = SASLIK_LOG_TAIL_BYTES) -> dict:
@@ -750,6 +776,19 @@ class Handler(BaseHTTPRequestHandler):
         return next((part.strip().split("=", 1)[1] for part in header.split(";")
                      if part.strip().startswith("saslik_session=")), "")
 
+    def _public_theme(self) -> dict[str, str] | None:
+        header = self.headers.get("Cookie", "")
+        raw = next((part.strip().split("=", 1)[1] for part in header.split(";")
+                    if part.strip().startswith("saslik_theme=")), "")
+        match = re.fullmatch(r"([a-z][a-z0-9-]{0,47})\.(dark|light|system)", raw)
+        return {"palette": match.group(1), "mode": match.group(2)} if match else None
+
+    @staticmethod
+    def _theme_cookie(appearance: dict[str, str]) -> str:
+        value = f'{appearance["palette"]}.{appearance["mode"]}'
+        return (f"saslik_theme={value}; Path=/; Max-Age=31536000; "
+                "Secure; SameSite=Lax")
+
     def _portal_session(self) -> bool:
         token = self._portal_token()
         now = time.monotonic()
@@ -812,11 +851,16 @@ class Handler(BaseHTTPRequestHandler):
         data = template.replace("{{MOTTO}}", html.escape(secrets.choice(mottos))) \
                        .replace("{{TITLE}}", title).replace("{{SUBTITLE}}", subtitle) \
                        .replace("{{FORM}}", form).replace("{{ERROR}}", message).encode("utf-8")
+        data = versioned_html(data, "login.html")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'self'; img-src 'self'; "
+            "script-src 'self'; connect-src 'self'",
+        )
         self.end_headers()
         self.wfile.write(data)
 
@@ -997,10 +1041,16 @@ class Handler(BaseHTTPRequestHandler):
     def _issue_session(self) -> None:
         now = time.monotonic()
         token = secrets.token_urlsafe(32)
+        appearance = portal_appearance(self.server.portal_credentials_path)
+        if appearance is None:
+            appearance = self._public_theme() or {"palette": "grill", "mode": "dark"}
+            with self.server.portal_auth_lock:
+                set_portal_appearance(self.server.portal_credentials_path, appearance)
         with self.server.portal_sessions_lock:
             self.server.portal_sessions[token] = now + 12 * 60 * 60
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/")
+        self.send_header("Set-Cookie", self._theme_cookie(appearance))
         self.send_header("Set-Cookie", f"saslik_session={token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
@@ -1567,7 +1617,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/crashes/clear", "/api/crashes/diagnose",
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
-                        "/api/account/password", "/api/public-installers",
+                        "/api/account/password", "/api/account/theme", "/api/public-installers",
                         "/api/network-plan", "/api/probe-settings", "/api/probe/run"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
@@ -1638,6 +1688,15 @@ class Handler(BaseHTTPRequestHandler):
                     if deadline > time.monotonic():
                         self.server.portal_sessions[token] = deadline
                 return self._json({"ok": True})
+            if path == "/api/account/theme":
+                try:
+                    with self.server.portal_auth_lock:
+                        appearance = set_portal_appearance(
+                            self.server.portal_credentials_path,
+                            {"palette": body.get("palette"), "mode": body.get("mode")})
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return self._json({"ok": True, **appearance})
             if path == "/api/portal-tls/renew":
                 with self.server.tls_lock:
                     certificate, key = generate_portal_tls(data_root() / "portal-tls",
@@ -2208,10 +2267,17 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             return self.send_error(HTTPStatus.NOT_FOUND)
         data = target.read_bytes()
+        if name.endswith(".html"):
+            data = versioned_html(data, name)
+        requested_version = parse_qs(urlparse(self.path).query).get("v", [""])[0]
+        current_version = asset_digest(data)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mimetypes.guess_type(name)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        if requested_version and secrets.compare_digest(requested_version, current_version):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'")
         self.end_headers()

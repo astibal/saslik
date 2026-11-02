@@ -41,7 +41,9 @@ const SASLIK_PALETTES = {"version":1,"palettes":[{"id":"grill","name":"Grill","m
   const localKey = `${key}.${app}`;
   const initial = {version:1,palette:'grill',mode:'dark',catalog:null};
   const read = k => {try {const s=localStorage.getItem(k);return s?validatePreference(JSON.parse(s)):null;} catch {return null;}};
-  let own = read(localKey), shared = read(key) || initial, bundled = fallback;
+  const readPublicCookie=()=>{try{const raw=document.cookie.split(';').map(v=>v.trim()).find(v=>v.startsWith('saslik_theme='))?.split('=',2)[1]||'',match=raw.match(/^([a-z][a-z0-9-]{0,47})\.(dark|light|system)$/);return match?validatePreference({version:1,palette:match[1],mode:match[2]}):null}catch{return null}};
+  const cookiePreference=app==='saslik'?readPublicCookie():null;
+  let own = cookiePreference?null:read(localKey), shared = cookiePreference||read(key)||initial, bundled = fallback;
   let current, status, dialog, paletteSelect, modeSelect, scopeSelect;
   const media = matchMedia('(prefers-color-scheme: dark)');
   const sheet = document.querySelector('link[data-saslik-theme]')?.sheet;
@@ -60,11 +62,17 @@ const SASLIK_PALETTES = {"version":1,"palettes":[{"id":"grill","name":"Grill","m
     document.dispatchEvent(new CustomEvent('saslik:themechange',{detail:current}));
     if(paletteSelect) syncUI();
   }
+  function persistAppearance(pref) {
+    document.cookie=`saslik_theme=${pref.palette}.${pref.mode}; Path=/; Max-Age=31536000; Secure; SameSite=Lax`;
+    if(app!=='saslik'||location.pathname==='/login')return;
+    (async()=>{const session=await fetch('/api/session',{cache:'no-store'});if(!session.ok)return;const value=await session.json();await fetch('/api/account/theme',{method:'POST',headers:{'Content-Type':'application/json','X-Saslik-CSRF':value.csrf},body:JSON.stringify({palette:pref.palette,mode:pref.mode})})})().catch(()=>{/* Theme remains available in the anonymous cookie and browser storage. */});
+  }
   function save(pref, local=!!own) {
     const valid=validatePreference(pref);
     if(local) own=valid; else {shared=valid;own=null;}
     let persisted=true;
     try {if(local)localStorage.setItem(localKey,JSON.stringify(valid));else{localStorage.removeItem(localKey);localStorage.setItem(key,JSON.stringify(valid));}} catch {persisted=false;}
+    persistAppearance(valid);
     apply();
     if(status)status.textContent=persisted?'Saved / Uloženo':'Applied for this tab; browser storage is unavailable.';
   }
@@ -97,7 +105,7 @@ const SASLIK_PALETTES = {"version":1,"palettes":[{"id":"grill","name":"Grill","m
     scopeSelect=select('Scope / Rozsah',[['shared','Shared with Saslik / Společné'],['local','Only this application / Jen tato aplikace']]);
     paletteSelect=select('Palette / Paleta',[]);
     modeSelect=select('Mode / Režim',[['dark','Dark / Tmavý'],['light','Light / Světlý'],['system','System / Systém']]);
-    scopeSelect.onchange=()=>{if(scopeSelect.value==='shared'){own=null;try{localStorage.removeItem(localKey);}catch{}shared=read(key)||shared;apply();}else save({...shared},true);};
+    scopeSelect.onchange=()=>{if(scopeSelect.value==='shared'){own=null;try{localStorage.removeItem(localKey);}catch{}shared=read(key)||shared;persistAppearance(shared);apply();}else save({...shared},true);};
     const update=()=>save({...own||shared,palette:paletteSelect.value,mode:modeSelect.value});
     paletteSelect.onchange=update;modeSelect.onchange=update;
     const actions=el('div');actions.className='st-actions';

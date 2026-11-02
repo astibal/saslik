@@ -10,9 +10,10 @@ from urllib.parse import urlencode
 from unittest.mock import Mock, patch
 
 from saslik.portal_auth import (ensure_portal_credentials, portal_account_info,
-                                record_portal_login, set_portal_password,
+                                portal_appearance, record_portal_login,
+                                set_portal_appearance, set_portal_password,
                                 verify_portal_password)
-from saslik.server import SaslikServer
+from saslik.server import Handler, SaslikServer, asset_digest
 from saslik.settings import update_settings
 
 
@@ -63,6 +64,22 @@ class PortalCredentialsTests(unittest.TestCase):
                              portal_account_info(path))
             record_portal_login(path)
             self.assertGreater(portal_account_info(path)["last_login_at"], 456.0)
+
+    def test_appearance_survives_login_and_password_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, path = ensure_portal_credentials(Path(directory))
+            set_portal_password(path, "correct horse battery")
+            set_portal_appearance(path, {"palette": "petroleum", "mode": "light"})
+            record_portal_login(path)
+            set_portal_password(path, "another correct battery")
+            self.assertEqual({"palette": "petroleum", "mode": "light"},
+                             portal_appearance(path))
+
+    def test_invalid_appearance_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, path = ensure_portal_credentials(Path(directory))
+            with self.assertRaises(ValueError):
+                set_portal_appearance(path, {"palette": "../../bad", "mode": "dark"})
 
 
 class PortalSessionTests(unittest.TestCase):
@@ -125,6 +142,57 @@ class PortalSessionTests(unittest.TestCase):
         status, _, page = self.request("GET", "/", headers={"Cookie": cookie})
         self.assertEqual(200, status)
         self.assertIn(b"Saslik", page)
+
+    def test_login_csp_allows_only_its_same_origin_theme_runtime(self):
+        status, headers, page = self.request("GET", "/login")
+        self.assertEqual(200, status)
+        policy = headers["Content-Security-Policy"]
+        self.assertIn("script-src 'self'", policy)
+        self.assertIn("connect-src 'self'", policy)
+        self.assertNotIn("'unsafe-inline'", policy)
+        self.assertRegex(page, rb'/saslik-theme\.js\?v=[0-9a-f]{16}')
+
+    def test_versioned_asset_is_served_as_immutable(self):
+        status, _, page = self.request("GET", "/login")
+        self.assertEqual(200, status)
+        path = b"/saslik-theme.js?v=" + page.split(
+            b'/saslik-theme.js?v=', 1)[1].split(b'"', 1)[0]
+        status, headers, data = self.request("GET", path.decode())
+        self.assertEqual(200, status)
+        self.assertEqual("public, max-age=31536000, immutable",
+                         headers["Cache-Control"])
+        self.assertEqual(path.decode().split("=", 1)[1], asset_digest(data))
+
+    def test_first_login_initializes_profile_from_anonymous_theme_cookie(self):
+        body = urlencode({"password": "correct horse battery",
+                          "confirm": "correct horse battery",
+                          "workspace_pool": "198.18.0.0/19",
+                          "tunnel_pool": "198.18.32.0/22",
+                          "service_address": "198.18.36.1"})
+        status, _, _ = self.request(
+            "POST", "/setup", body,
+            {"Content-Type": "application/x-www-form-urlencoded",
+             "Content-Length": str(len(body)),
+             "Cookie": "saslik_theme=petroleum.light"})
+        self.assertEqual(303, status)
+        self.assertEqual({"palette": "petroleum", "mode": "light"},
+                         portal_appearance(self.server.portal_credentials_path))
+        self.assertIn("Max-Age=31536000", Handler._theme_cookie(
+            {"palette": "petroleum", "mode": "light"}))
+
+    def test_authenticated_theme_change_updates_profile(self):
+        cookie, _ = self.claim()
+        status, _, payload = self.request(
+            "GET", "/api/session", headers={"Cookie": cookie})
+        csrf = json.loads(payload)["csrf"]
+        body = json.dumps({"palette": "petroleum", "mode": "system"})
+        status, _, payload = self.request(
+            "POST", "/api/account/theme", body,
+            {"Cookie": cookie, "Content-Type": "application/json",
+             "Content-Length": str(len(body)), "X-Saslik-CSRF": csrf})
+        self.assertEqual(200, status, payload)
+        self.assertEqual({"palette": "petroleum", "mode": "system"},
+                         portal_appearance(self.server.portal_credentials_path))
 
     def test_skewer_discovery_is_public_but_ui_api_is_not(self):
         status, _, _ = self.request("GET", "/api/skewer")
