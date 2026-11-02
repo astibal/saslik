@@ -64,13 +64,14 @@ function renderCards(values,skewerConnected=false){
  const skewer=`skewer://connect?discovery=${encodeURIComponent(`${location.origin}/api/skewer`)}`;
  if(Object.keys(values).some(key=>key!=='ca_download'))values={...values,skewer};
  const definitions=[
-  {title:'Použít lab',hint:'kliknutím otevřeš',kind:'app',items:[['spider_ui','Smithproxy Spider','live prohlížeč a skriptovací editor provozu'],['pcap_viewer','CZ PCAP Viewer','prohlížení a analýza zachycených PCAP souborů'],['cli','Smithproxy CLI','interaktivní konfigurace a diagnostika proxy']]},
+  {title:'Použít lab',hint:'kliknutím otevřeš',kind:'app',items:[['smithproxy_gui','Smithproxy GUI','grafická správa a monitoring Smithproxy'],['spider_ui','Smithproxy Spider','live prohlížeč a skriptovací editor provozu'],['pcap_viewer','CZ PCAP Viewer','prohlížení a analýza zachycených PCAP souborů'],['cli','Smithproxy CLI','interaktivní konfigurace a diagnostika proxy']]},
   {title:'Připojit do labu',hint:'selektivní routing nebo proxy endpoint',kind:'connect',items:[['skewer','Skewer','vyber aplikace, jejichž provoz má projít labem'],['proxy','HTTP CONNECT','nastav si v prohlížeči tuto proxy'],['socks','SOCKS5','nastav si tuto proxy s remote DNS']]},
   {title:'API a endpointy',hint:'kliknutím na URL zkopíruješ',kind:'api',items:[['smithproxy_api','Smithproxy API','automatizace a vzdálené řízení Smithproxy'],['sift','Sift API','analýza payloadů a enrichment provozu']]},
   {title:'Certifikační autorita',hint:'důvěra k TLS inspekci',kind:'ca',items:[['ca_download','CA certifikát','nainstaluj pro důvěryhodnou TLS inspekci']]},
  ];
  const copyButton=value=>`<button class="card-copy" type="button" data-copy="${esc(value)}" title="Kopírovat URL" aria-label="Kopírovat URL">⧉</button>`;
  const help={
+  smithproxy_gui:'Grafické rozhraní pro správu Smithproxy. Otevírá konfiguraci, monitoring a provozní přehled aktuálního workspace.',
   spider_ui:'Živý pohled do provozu Smithproxy. Uvidíš sessions, payloady a můžeš nad nimi rovnou spouštět vlastní skripty.',
   pcap_viewer:'Otevře PCAP soubory ze storage workspace. Zachycený provoz můžeš filtrovat a analyzovat bez kopírování dat mimo lab.',
   cli:'Plnohodnotná administrační konzole Smithproxy přímo v Sasliku. Hodí se pro diagnostiku i změny běžící konfigurace.',

@@ -20,6 +20,7 @@ class GatewayConfigurationTests(unittest.TestCase):
                 host="0.0.0.0", port=8765, upstream_port=43123,
                 certificate=root / "certificate.pem", key=root / "private-key.pem",
                 runtime_dir=root, auth_secret="private-token",
+                gui_gateway_secret="gui-gateway-secret-0123456789012345",
                 instances=[Instance("alpha", workspace_id=1),
                            Instance("beta", workspace_id=7)],
             )
@@ -53,6 +54,13 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("auth_request /__saslik_auth", gui)
         self.assertIn("proxy_pass http://10.240.0.2:18082;", gui)
         self.assertIn("X-Forwarded-Prefix /ws001/smithproxy-gui", gui)
+        self.assertIn(
+            "X-Smithproxy-GUI-Gateway gui-gateway-secret-0123456789012345", gui
+        )
+        self.assertNotIn(
+            "X-Smithproxy-GUI-Gateway",
+            self.location(config, "/ws001/spider/"),
+        )
         self.assertIn("proxy_buffering off", gui)
         self.assertIn(
             "auth_request /__saslik_api_auth",

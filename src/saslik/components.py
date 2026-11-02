@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .licensing import (DEFAULT_ISSUER, EntitlementMissing, LicensingError,
                         bootstrap_issuer, install_issuer, license_grant)
+from .gateway_secret import ensure_gateway_secret
 from .runtime import WorkspaceRuntime
 from .settings import component_environment, component_restart_on_failure, setting_value
 
@@ -30,6 +31,15 @@ SMITHPROXY_GUI_PORT = 18082
 SMITHPROXY_GUI_ENV_KEYS = (
     "SMITHPROXY_API_URL", "SMITHPROXY_API_KEY", "SMITHPROXY_CA_CERT",
 )
+
+
+def _gateway_runtime_dir(lab: Path) -> Path:
+    if lab.parent.name == "instances":
+        return lab.parent.parent / "gateway"
+    if lab.name == "lab":
+        return lab.parent / "gateway"
+    # Isolated component tests and non-standard callers must not share /tmp/gateway.
+    return lab / "state/gateway"
 
 
 def _run(command: list[str], *, tolerate: bool = False,
@@ -64,6 +74,8 @@ def _state_env(lab: Path) -> dict[str, str]:
 def write_smithproxy_gui_environment(lab: Path) -> Path:
     """Atomically derive the GUI's narrow credential file from workspace state."""
     values = _state_env(lab)
+    values["SMITHPROXY_GUI_GATEWAY_SECRET"] = ensure_gateway_secret(
+        _gateway_runtime_dir(lab))
     missing = [key for key in SMITHPROXY_GUI_ENV_KEYS if not values.get(key)]
     if missing:
         raise RuntimeError("state.env neobsahuje GUI hodnoty: " + ", ".join(missing))
@@ -76,7 +88,7 @@ def write_smithproxy_gui_environment(lab: Path) -> Path:
     descriptor, temporary = tempfile.mkstemp(prefix=".smithproxy-gui.env.", dir=state)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            for key in SMITHPROXY_GUI_ENV_KEYS:
+            for key in (*SMITHPROXY_GUI_ENV_KEYS, "SMITHPROXY_GUI_GATEWAY_SECRET"):
                 stream.write(f"{key}={values[key]}\n")
             stream.flush()
             os.fsync(stream.fileno())

@@ -13,6 +13,7 @@ import ipaddress
 from pathlib import Path
 
 from .instance import Instance
+from .gateway_secret import ensure_gateway_secret
 from .runtime import ADDRESS_POOL, WorkspaceRuntime
 
 
@@ -35,6 +36,7 @@ def _nginx_quote(value: str | Path) -> str:
 
 
 def workspace_locations(instances: list[Instance], auth_secret: str,
+                        gui_gateway_secret: str,
                         address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> str:
     locations: list[str] = []
     for instance in sorted(instances, key=lambda item: item.workspace_id):
@@ -73,6 +75,11 @@ def workspace_locations(instances: list[Instance], auth_secret: str,
                         "\n        error_page 403 = @saslik_api_forbidden;")
             scheme = "https" if tls else "http"
             tls_options = "\n        proxy_ssl_verify off;" if tls else ""
+            gui_handoff = (
+                "\n        proxy_set_header X-Smithproxy-GUI-Gateway "
+                f"{gui_gateway_secret};"
+                if suffix == "smithproxy-gui" else ""
+            )
             # A trailing slash replaces the matched prefix. Prefix-aware UI
             # servers receive the original URI and strip SCRIPT_NAME themselves.
             upstream = f"{scheme}://{address}:{port}" + ("" if preserve_path else "/")
@@ -82,7 +89,7 @@ def workspace_locations(instances: list[Instance], auth_secret: str,
         proxy_http_version 1.1;
         proxy_set_header Host 127.0.0.1;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Prefix {prefix}/{suffix};{upgrade}
+        proxy_set_header X-Forwarded-Prefix {prefix}/{suffix};{upgrade}{gui_handoff}
         proxy_pass {upstream};{tls_options}
         proxy_request_buffering off;
         proxy_buffering off;
@@ -108,6 +115,7 @@ def appearance_locations(web_root: Path | None = None) -> str:
 
 def nginx_config(*, host: str, port: int, upstream_port: int, certificate: Path,
                  key: Path, runtime_dir: Path, auth_secret: str,
+                 gui_gateway_secret: str,
                  instances: list[Instance],
                  address_pool: ipaddress.IPv4Network = ADDRESS_POOL) -> str:
     listen_host = "[::]" if host == "::" else host
@@ -159,7 +167,7 @@ http {{
             return 302 /login;
         }}
 {appearance_locations()}
-{workspace_locations(instances, auth_secret, address_pool)}
+{workspace_locations(instances, auth_secret, gui_gateway_secret, address_pool)}
 
         location / {{
             proxy_http_version 1.1;
@@ -207,6 +215,7 @@ class NginxGateway:
             host=self.host, port=self.port, upstream_port=self.upstream_port,
             certificate=self.certificate, key=self.key,
             runtime_dir=self.runtime_dir, auth_secret=self.auth_secret,
+            gui_gateway_secret=ensure_gateway_secret(self.runtime_dir),
             instances=Instance.discover(),
             address_pool=self.address_pool,
         )
