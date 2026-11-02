@@ -329,7 +329,7 @@ class SystemdComponents:
                 (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
                  "--storage-token-file", str(viewer_workspace / "storage.token"),
                  "--capacity-profile", "desktop", "--theme-fixed", "saslik",
-                 "--port", str(PCAP_VIEWER_PORT), "--no-browser",
+                 "--disable-local-import", "--port", str(PCAP_VIEWER_PORT), "--no-browser",
                  "--base-path", f"{self.runtime.web_prefix}/viewer/"),
                 self.state / "pcap-viewer.log",
                 component_environment(self.lab, "pcap-viewer"),

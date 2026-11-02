@@ -249,6 +249,7 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--theme-fixed", component.command)
         self.assertEqual("saslik", component.command[
             component.command.index("--theme-fixed") + 1])
+        self.assertIn("--disable-local-import", component.command)
         self.assertIn("25174", component.command)
         relay = next(item for item in components if item.name == "pcap-viewer-tls")
         self.assertIn("OPENSSL-LISTEN:15174", relay.command[1])
