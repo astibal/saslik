@@ -1,4 +1,4 @@
-.account-menu > .account-dialog { width: 410px; gap: 14px; padding: 18px; }
+.account-menu > .account-dialog { top: calc(100% + 28px); width: 410px; gap: 14px; padding: 18px; }
 .account-tabs { display: flex; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .account-tabs button { min-width: 88px; height: 32px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
 .account-tabs button:hover { color: var(--text); }
