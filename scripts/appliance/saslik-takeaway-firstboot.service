@@ -1,0 +1,16 @@
+[Unit]
+Description=Initialize unique Saslik Takeaway identity
+ConditionPathExists=/var/lib/saslik/.takeaway-first-boot.json
+After=local-fs.target systemd-machine-id-commit.service
+Before=saslik.service ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+Environment=SASLIK_DATA_DIR=/var/lib/saslik
+Environment=SASLIK_CONFIG_DIR=/var/lib/saslik/config
+ExecStart=/opt/saslik/venv/bin/python -m saslik.takeaway first-boot --data-root /var/lib/saslik
+
+[Install]
+WantedBy=multi-user.target

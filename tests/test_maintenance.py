@@ -4,11 +4,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from saslik.maintenance import (component_logs, process_log, rotate_copytruncate,
-                                repair_log_ownership, save_logpack)
+from saslik.maintenance import (LogMaintenance, component_logs, process_log,
+                                rotate_copytruncate, repair_log_ownership,
+                                save_logpack)
 
 
 class MaintenanceTests(unittest.TestCase):
+    @patch("saslik.build_cache.prune_build_cache")
+    @patch("saslik.maintenance.checkout_build_cache")
+    def test_periodic_maintenance_prunes_checkout_cache(self, checkout, prune):
+        checkout.return_value = Path("/cache")
+        prune.return_value.busy = False
+        prune.return_value.removed_entries = 0
+        maintenance = LogMaintenance(Path("/data"))
+
+        maintenance.run_once()
+        maintenance.run_once()
+
+        prune.assert_called_once_with(Path("/cache"))
+
     def test_component_log_discovery_is_limited_to_workspace_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

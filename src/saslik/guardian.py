@@ -19,6 +19,8 @@ from .debug import start_gdbserver, stop_gdbserver
 from .tuntom_supervisor import TunnelSupervisor
 from .maintenance import maintain_component_logs, repair_log_ownership
 from .runtime import WorkspaceRuntime
+from .takeaway_jobs import cancel_unit as cancel_takeaway_unit
+from .takeaway_jobs import start_unit as start_takeaway_unit
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
@@ -131,6 +133,10 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         repair_log_ownership(root, owner_uid)
                         maintain_component_logs(root)
                         repair_log_ownership(root, owner_uid)
+                    elif payload.get("action") == "takeaway-start":
+                        start_takeaway_unit(root, str(payload.get("job", "")), owner_uid)
+                    elif payload.get("action") == "takeaway-cancel":
+                        cancel_takeaway_unit(root, str(payload.get("job", "")))
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
                     send_response(connection, response)

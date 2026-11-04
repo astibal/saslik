@@ -1,0 +1,374 @@
+#!/bin/bash
+set -euo pipefail
+
+fail() { printf 'saslik-takeaway: %s\n' "$*" >&2; exit 1; }
+[[ ${EUID:-$(id -u)} -eq 0 ]] || fail 'spusť mě přes sudo'
+
+bundle_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
+image="$bundle_dir/saslik-takeaway.sqfs"
+data="$bundle_dir/data"
+runtime="$data/.runtime"
+image_mount="$runtime/image"
+lower="$image_mount/rootfs"
+seed="$image_mount/takeaway/seed.tar"
+manifest="$image_mount/takeaway/manifest.json"
+merged="$runtime/root"
+upper="$data/system/upper"
+work="$data/system/work"
+state="$data/state"
+library="$data/library"
+machine_file="$data/.machine-name"
+bundle_id_file="$data/.bundle-id"
+host_stamp_file="$data/.host-machine"
+plan_file="$data/host-plan.env"
+pasta_pid="$runtime/pasta.pid"
+netns_file="$runtime/netns"
+netns_ref=
+marker_name=.takeaway-first-boot.json
+requested_port=
+bind_address=127.0.0.1
+bind_explicit=0
+host_port=
+psk_port=
+tuntom_port_base=
+instance_slot=
+slot_fd=
+
+need() { command -v "$1" >/dev/null 2>&1 || fail "chybí příkaz: $1"; }
+mounted() { mountpoint -q "$1"; }
+
+listening_port_in_range() {
+    local protocol=$1 first=$2 last=$3
+    ss -H "-l${protocol}n" | awk -v first="$first" -v last="$last" '
+        { value=$4; sub(/^.*:/, "", value); if (value + 0 >= first && value + 0 <= last) found=1 }
+        END { exit !found }
+    '
+}
+
+write_plan() {
+    local temporary="$plan_file.tmp"
+    umask 077
+    printf 'FORMAT=1\nSLOT=%s\nBIND_ADDRESS=%s\nPORT=%s\nPSK_PORT=%s\nTUNTOM_PORT_BASE=%s\n' \
+        "$instance_slot" "$bind_address" "$host_port" "$psk_port" "$tuntom_port_base" \
+        >"$temporary"
+    mv -f "$temporary" "$plan_file"
+}
+
+saved_slot() {
+    [[ -r $plan_file ]] || return 1
+    local value
+    value=$(sed -n 's/^SLOT=//p' "$plan_file")
+    [[ $value =~ ^[0-9]+$ && $value -le 99 ]] || return 1
+    printf '%s\n' "$value"
+}
+
+allocate_host_plan() {
+    need flock
+    need ss
+    need ip
+    install -d -m 0755 /run/lock
+    local preferred candidate candidate_fd portal saved_bind
+    if (( ! bind_explicit )) && [[ -r $plan_file ]]; then
+        saved_bind=$(sed -n 's/^BIND_ADDRESS=//p' "$plan_file")
+        [[ -z $saved_bind ]] || bind_address=$saved_bind
+    fi
+    [[ $bind_address =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'bind musí být IPv4 adresa'
+    if [[ $bind_address != 0.0.0.0 && $bind_address != 127.* ]] && \
+       ! ip -4 -o address show | grep -Fq " $bind_address/"; then
+        fail "bind adresa není na hostu: $bind_address"
+    fi
+    preferred=$(saved_slot || true)
+    [[ -z $requested_port || $requested_port =~ ^[0-9]+$ ]] || fail 'port musí být číslo'
+    for candidate in ${preferred:+$preferred} $(seq 0 99); do
+        [[ $candidate =~ ^[0-9]+$ ]] || continue
+        [[ -z ${instance_slot:-} || $candidate != "$instance_slot" ]] || continue
+        eval "exec {candidate_fd}>/run/lock/saslik-takeaway-slot-$candidate.lock"
+        if ! flock -n "$candidate_fd"; then
+            eval "exec ${candidate_fd}>&-"
+            continue
+        fi
+        portal=${requested_port:-$((8765 + candidate * 2))}
+        if (( portal < 1024 || portal > 65534 )); then
+            eval "exec ${candidate_fd}>&-"
+            fail 'port musí být v rozsahu 1024–65534'
+        fi
+        if listening_port_in_range t "$portal" "$((portal + 1))"; then
+            eval "exec ${candidate_fd}>&-"
+            [[ -z $requested_port ]] && continue
+            fail "port $portal nebo $((portal + 1)) už někdo používá"
+        fi
+        local udp_base=$((10000 + candidate * 256))
+        if listening_port_in_range u "$((udp_base + 1))" "$((udp_base + 255))"; then
+            eval "exec ${candidate_fd}>&-"
+            continue
+        fi
+        instance_slot=$candidate
+        slot_fd=$candidate_fd
+        host_port=$portal
+        psk_port=$((portal + 1))
+        tuntom_port_base=$udp_base
+        write_plan
+        return
+    done
+    fail 'není volný Takeaway host port block'
+}
+
+new_bundle_id() {
+    tr -d '-' </proc/sys/kernel/random/uuid
+}
+
+host_stamp() {
+    sha256sum /etc/machine-id | awk '{print $1}'
+}
+
+prepare_cloned_identity() {
+    local identifier
+    identifier=$(new_bundle_id)
+    printf '%s\n' "$identifier" >"$bundle_id_file"
+    printf '%s\n' "$(host_stamp)" >"$host_stamp_file"
+    rm -f "$machine_file" "$plan_file"
+    rm -rf "$data/system"
+    cat >"$state/$marker_name" <<'EOF'
+{
+  "format": 1,
+  "source_data_root": "/var/lib/saslik",
+  "sealed_workspaces": []
+}
+EOF
+    chmod 0600 "$state/$marker_name"
+    printf 'Detekována kopie spuštěného bundlu; při bootu rotuji identitu a credentials.\n'
+}
+
+ensure_unique_identity() {
+    need sha256sum
+    need flock
+    local registry=/var/lib/saslik-takeaway/instances identifier current_host old_path cloned=0
+    install -d -m 0700 "$registry"
+    exec 7>/run/lock/saslik-takeaway-registry.lock
+    flock 7
+    if [[ ! -s $bundle_id_file ]]; then
+        new_bundle_id >"$bundle_id_file"
+        chmod 0600 "$bundle_id_file"
+    fi
+    identifier=$(cat "$bundle_id_file")
+    [[ $identifier =~ ^[0-9a-f]{32}$ ]] || fail 'poškozená identita Takeaway bundlu'
+    current_host=$(host_stamp)
+    if [[ -s $host_stamp_file && $(cat "$host_stamp_file") != "$current_host" ]]; then
+        cloned=1
+    fi
+    if [[ -r $registry/$identifier ]]; then
+        old_path=$(cat "$registry/$identifier")
+        if [[ $old_path != "$bundle_dir" && -e $old_path ]]; then
+            cloned=1
+        fi
+    fi
+    if (( cloned )); then
+        prepare_cloned_identity
+        identifier=$(cat "$bundle_id_file")
+    else
+        printf '%s\n' "$current_host" >"$host_stamp_file"
+        chmod 0600 "$host_stamp_file"
+    fi
+    printf '%s\n' "$bundle_dir" >"$registry/$identifier"
+    chmod 0600 "$registry/$identifier"
+}
+
+machine_name() {
+    if [[ ! -s $machine_file ]]; then
+        local suffix
+        suffix=$(tr -d '-' </proc/sys/kernel/random/uuid | cut -c1-12)
+        printf 'saslik-%s\n' "$suffix" >"$machine_file"
+        chmod 0600 "$machine_file"
+    fi
+    cat "$machine_file"
+}
+
+initialize() {
+    [[ -f $image && -f $seed && -f $manifest && -d $lower ]] || fail 'bundle není kompletní'
+    install -d -m 0700 "$data" "$state" "$library" "$data/system" "$runtime"
+    if [[ ! -e $data/.initialized ]]; then
+        [[ -z $(find "$state" -mindepth 1 -print -quit) ]] || \
+            fail 'data/state není prázdný, ale chybí inicializační marker'
+        tar -C "$state" -xf "$seed"
+        touch "$data/.initialized"
+        chmod 0600 "$data/.initialized"
+    fi
+    machine_name >/dev/null
+}
+
+mount_root() {
+    need mount
+    need mountpoint
+    install -d -m 0700 "$image_mount" "$merged" "$upper" "$work"
+    mounted "$image_mount" || mount -t squashfs -o loop,ro "$image" "$image_mount"
+    [[ -d $lower ]] || fail 'Takeaway image neobsahuje rootfs'
+    if ! mounted "$merged"; then
+        mount -t overlay overlay \
+            -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$merged"
+    fi
+}
+
+cleanup_mounts() {
+    if mounted "$merged"; then umount "$merged"; fi
+    if mounted "$image_mount"; then umount "$image_mount"; fi
+}
+
+cleanup_network() {
+    if [[ -s $pasta_pid ]]; then
+        local pid
+        pid=$(cat "$pasta_pid")
+        if [[ -r /proc/$pid/comm ]] && grep -qxE 'pasta(\.avx2)?' "/proc/$pid/comm"; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pasta_pid"
+    fi
+    if [[ -n ${netns_ref:-} ]] && mounted "$netns_ref"; then umount -l "$netns_ref"; fi
+    [[ -z ${netns_ref:-} ]] || rm -f "$netns_ref"
+    if [[ -s $netns_file ]]; then
+        ip netns del "$(cat "$netns_file")" 2>/dev/null || true
+        rm -f "$netns_file"
+    fi
+}
+
+start_network() {
+    need ip
+    need pasta
+    local machine netns deadline
+    machine=$(machine_name)
+    netns="st-${machine#saslik-}"
+    netns_ref="/run/user/0/saslik/$netns"
+    cleanup_network
+    ip netns add "$netns"
+    printf '%s\n' "$netns" >"$netns_file"
+    install -d -m 0700 "$(dirname "$netns_ref")"
+    touch "$netns_ref"
+    mount --bind "/run/netns/$netns" "$netns_ref"
+    pasta --foreground --runas 0 --netns "$netns_ref" --netns-only \
+        --config-net --ns-ifname host0 \
+        --tcp-ports "$bind_address/$host_port-$psk_port:8765-8766" \
+        --udp-ports "$bind_address/$((tuntom_port_base + 1))-$((tuntom_port_base + 255)):40001-40255" \
+        --tcp-ns none --udp-ns none &
+    printf '%s\n' "$!" >"$pasta_pid"
+    deadline=$((SECONDS + 8))
+    until ip -n "$netns" link show host0 >/dev/null 2>&1; do
+        (( SECONDS < deadline )) || fail 'pasta nevytvořila Takeaway interface host0'
+        sleep .1
+    done
+    kill -0 "$(cat "$pasta_pid")" 2>/dev/null || fail 'pasta skončila během startu'
+}
+
+start() {
+    need systemd-nspawn
+    need machinectl
+    need flock
+    printf '%s\n' \
+        'Saslik Takeaway 🔥🍢 → 🥡' \
+        '' \
+        'Spouštím Takeaway runtime; uvnitř bude spuštěna aplikace Saslik.' \
+        'Další příkazy: ./saslik-tkw status | stop | verify | eject' \
+        'Ctrl-C zastaví celý runtime.' \
+        ''
+    verify
+    install -d -m 0700 "$data"
+    exec 9>"$data/.start.lock"
+    flock -n 9 || fail 'bundle už startuje nebo běží v jiném terminálu'
+    local machine
+    local -a workspace_binds
+    trap 'machinectl terminate "$(machine_name)" >/dev/null 2>&1 || true; cleanup_network; cleanup_mounts' EXIT INT TERM
+    mount_root
+    initialize
+    ensure_unique_identity
+    machine=$(machine_name)
+    allocate_host_plan
+    start_network
+    workspace_binds=()
+    if [[ -d $state/lab ]]; then
+        install -d -m 0700 "$library/default"
+        workspace_binds+=(--bind="$library/default:/var/lib/saslik/lab/state/smithproxy-data")
+    fi
+    if [[ -d $state/instances ]]; then
+        local workspace name
+        for workspace in "$state"/instances/*; do
+            [[ -d $workspace && ! -L $workspace ]] || continue
+            name=${workspace##*/}
+            install -d -m 0700 "$library/$name"
+            workspace_binds+=(--bind="$library/$name:/var/lib/saslik/instances/$name/state/smithproxy-data")
+        done
+    fi
+    printf 'Saslik Takeaway starts as machine %s\n' "$machine"
+    local display_address=$bind_address
+    [[ $display_address != 0.0.0.0 ]] || display_address='<host-ip>'
+    printf 'Portal: https://%s:%s/\nPairing: %s · Tuntom UDP: %s-%s\n' \
+        "$display_address" "$host_port" "$psk_port" \
+        "$((tuntom_port_base + 1))" "$((tuntom_port_base + 255))"
+    printf 'Press Ctrl-C to stop everything ;)\n'
+    systemd-nspawn --quiet --boot --directory="$merged" --machine="$machine" \
+        --network-namespace-path="$netns_ref" \
+        --setenv="SASLIK_PUBLIC_UI_PORT=$host_port" \
+        --setenv="SASLIK_PUBLIC_PSK_PORT=$psk_port" \
+        --setenv="SASLIK_TUNTOM_PUBLIC_PORT_BASE=$tuntom_port_base" \
+        --capability=CAP_NET_ADMIN,CAP_NET_RAW,CAP_SYS_ADMIN \
+        --bind="$state:/var/lib/saslik" \
+        --bind="$library:/saslik/library" \
+        "${workspace_binds[@]}" \
+        --link-journal=try-guest
+}
+
+stop() {
+    if [[ ! -s $machine_file ]]; then
+        printf 'Saslik Takeaway is already stopped.\n'
+        return
+    fi
+    machinectl terminate "$(machine_name)" >/dev/null 2>&1 || true
+    printf 'Saslik Takeaway stopped.\n'
+}
+
+status() {
+    if [[ ! -s $machine_file ]]; then
+        printf 'State=not-initialized\n'
+        return
+    fi
+    local machine
+    machine=$(machine_name)
+    [[ ! -r $plan_file ]] || cat "$plan_file"
+    if machinectl show "$machine" >/dev/null 2>&1; then
+        machinectl show "$machine" -p Name -p State -p Leader -p Service
+    else
+        printf 'Name=%s\nState=stopped\n' "$machine"
+    fi
+}
+
+verify() {
+    need sha256sum
+    (cd "$bundle_dir" && sha256sum -c SHA256SUMS)
+}
+
+eject() {
+    stop
+    if [[ -s $netns_file ]]; then
+        netns_ref="/run/user/0/saslik/$(cat "$netns_file")"
+    fi
+    cleanup_network
+    cleanup_mounts
+    printf 'Saslik Takeaway unmounted.\n'
+}
+
+action=${1:-start}
+[[ $# -eq 0 ]] || shift
+while (($#)); do
+    case $1 in
+        --port) requested_port=${2:-}; shift 2 ;;
+        --bind) bind_address=${2:-}; bind_explicit=1; shift 2 ;;
+        *) fail "neznámý argument: $1" ;;
+    esac
+done
+
+case $action in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    verify) verify ;;
+    eject) eject ;;
+    *) fail 'použití: ./saslik-tkw start [--port PORT] [--bind IPv4] | {stop|status|verify|eject}' ;;
+esac

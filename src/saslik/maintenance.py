@@ -19,6 +19,18 @@ PROCESS_LOG_LIMIT = 8 * 1024 * 1024
 COMPONENT_LOG_LIMIT = 16 * 1024 * 1024
 LOG_BACKUPS = 4
 MAINTENANCE_INTERVAL = 60.0
+BUILD_CACHE_MAINTENANCE_INTERVAL = 6 * 60 * 60
+
+
+def checkout_build_cache() -> Path | None:
+    """Return the development checkout cache; installed wheels have none."""
+    configured = os.environ.get("SASLIK_BUILD_CACHE")
+    if configured:
+        return Path(configured).expanduser()
+    checkout = Path(__file__).resolve().parents[2]
+    if (checkout / "pyproject.toml").is_file() and (checkout / "src/saslik").is_dir():
+        return checkout / "build/cache/appliance"
+    return None
 
 
 def _shift_archives(path: Path, backups: int) -> None:
@@ -157,6 +169,7 @@ class LogMaintenance:
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._next_cache_maintenance = 0.0
 
     def start(self, *, run_immediately: bool = True) -> "LogMaintenance":
         if run_immediately:
@@ -169,7 +182,23 @@ class LogMaintenance:
     def run_once(self) -> None:
         try:
             maintain_component_logs(self.root)
-        except OSError as exc:
+            from .takeaway_jobs import prune_jobs, prune_workdirs
+            prune_jobs(self.root)
+            prune_workdirs(self.root)
+            now = time.monotonic()
+            cache = checkout_build_cache()
+            if cache is not None and now >= self._next_cache_maintenance:
+                from .build_cache import prune_build_cache
+                report = prune_build_cache(cache)
+                # A busy cache is expected during a build. Retry on the next
+                # maintenance tick instead of waiting inside the portal.
+                if not report.busy:
+                    self._next_cache_maintenance = now + BUILD_CACHE_MAINTENANCE_INTERVAL
+                    if report.removed_entries:
+                        print("Saslik build cache maintenance: "
+                              f"{report.removed_entries} položek, "
+                              f"{report.reclaimed_bytes} B uvolněno.")
+        except (OSError, ValueError) as exc:
             print(f"Saslik log maintenance: {exc}", file=sys.stderr)
 
     def _run(self) -> None:
