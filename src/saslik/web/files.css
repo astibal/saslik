@@ -31,3 +31,4 @@
 .syn-key { color:var(--st-info, #42d6cb); }
 .file-editor.empty .file-code { opacity:.35; }
 @media(max-width:760px){.files-toolbar{grid-template-columns:1fr auto auto}.files-layout{grid-template-columns:1fr}}
+.file-change{border-radius:6px}
