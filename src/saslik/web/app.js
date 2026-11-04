@@ -82,6 +82,9 @@ function renderTrafficFlow(value){const target=value.target||'example.com',resol
 function endpointHost(){return location.hostname.includes(':')?`[${location.hostname}]`:location.hostname}
 function publicEndpoint(key,value){const host=endpointHost();if(key==='cli')return `${host}:${String(value).split(':').pop()}`;if(String(value).startsWith('/'))return `${location.origin}${value}`;try{const url=new URL(value),parts=url.hostname.split('.').map(Number),privateHost=url.hostname==='localhost'||url.hostname==='127.0.0.1'||(parts.length===4&&(parts[0]===10||(parts[0]===172&&parts[1]>=16&&parts[1]<=31)||(parts[0]===192&&parts[1]===168)));if(privateHost)url.hostname=location.hostname;return url.toString()}catch{return value}}
 function renderCards(values,skewerConnected=false){
+ const headerCa=$('header-ca-download');
+ headerCa.classList.toggle('hidden',!values.ca_download);
+ if(values.ca_download)headerCa.href=publicEndpoint('ca_download',values.ca_download);
  const skewer=`skewer://connect?discovery=${encodeURIComponent(`${location.origin}/api/skewer`)}`;
  if(Object.keys(values).some(key=>key!=='ca_download'))values={...values,skewer};
  const definitions=[
