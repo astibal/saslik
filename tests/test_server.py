@@ -1,4 +1,5 @@
 import base64
+import os
 import unittest
 import tempfile
 from pathlib import Path
@@ -8,8 +9,29 @@ from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
                            client_network_view,
                            normalize_skewer_report,
                            pairing_qr_data_url,
-                           fetch_skewer_deb, skewer_discovery,
+                           public_service_ports,
+                           fetch_skewer_deb, fetch_skewer_windows, skewer_discovery,
                            web_log_tail)
+
+
+class PublicServicePortTests(unittest.TestCase):
+    def test_defaults_follow_internal_listener(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SASLIK_PUBLIC_UI_PORT", None)
+            os.environ.pop("SASLIK_PUBLIC_PSK_PORT", None)
+            self.assertEqual(public_service_ports(8765), (8765, 8766))
+
+    def test_takeaway_can_advertise_translated_ports(self):
+        with patch.dict(os.environ, {
+            "SASLIK_PUBLIC_UI_PORT": "9000",
+            "SASLIK_PUBLIC_PSK_PORT": "9001",
+        }):
+            self.assertEqual(public_service_ports(8765), (9000, 9001))
+
+    def test_invalid_public_port_is_rejected(self):
+        with patch.dict(os.environ, {"SASLIK_PUBLIC_PSK_PORT": "70000"}):
+            with self.assertRaisesRegex(RuntimeError, "veřejný port"):
+                public_service_ports(8765)
 
 
 class DummySocket:
@@ -195,6 +217,22 @@ class SkewerDiscoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fetch_skewer_deb()
         response.close.assert_called_once()
+
+    @patch("saslik.server.urlopen")
+    def test_windows_package_proxy_uses_stable_release_assets(self, urlopen):
+        response = MagicMock()
+        response.geturl.return_value = (
+            "https://release-assets.githubusercontent.com/github-production-release-asset/file.exe")
+        response.headers = {"Content-Length": "3"}
+        response.read.side_effect = [b"exe", b""]
+        urlopen.return_value = response
+
+        package, size = fetch_skewer_windows("installer")
+        package.close()
+        self.assertEqual(3, size)
+        self.assertEqual(
+            "https://github.com/astibal/saslik-skewer/releases/latest/download/SkewerSetup.exe",
+            urlopen.call_args.args[0])
 
     def test_report_is_bounded_and_normalized(self):
         value = normalize_skewer_report({

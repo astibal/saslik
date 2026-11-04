@@ -66,6 +66,14 @@ from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
 from .portal_tls import generate as generate_portal_tls
 from .maintenance import LOG_BACKUPS, PROCESS_LOG_LIMIT, RotatingLog, save_logpack
+from .takeaway_jobs import (create_job as create_takeaway_job,
+                            delete_job as delete_takeaway_job,
+                            disk_preflight as takeaway_preflight,
+                            job_path as takeaway_job_path,
+                            jobs_root as takeaway_jobs_root,
+                            list_jobs as list_takeaway_jobs,
+                            source_checkout as takeaway_source_checkout,
+                            update_job as update_takeaway_job)
 
 
 SASLIK_LOG_TAIL_BYTES = 256 * 1024
@@ -131,6 +139,10 @@ def web_log_tail(root: Path, lab: Path, source: str) -> dict:
         return log_tail(root / "saslik.log")
     if source == "skewer-api":
         return log_tail(root / "skewer-api.log")
+    if source == "takeaway":
+        jobs = list_takeaway_jobs(root)
+        return (log_tail(takeaway_job_path(root, jobs[0]["id"], "build.log"))
+                if jobs else {"data": "", "revision": "missing", "truncated": False})
     if source == "tuntom":
         paths = sorted((lab / "state").glob("tuntom-*.log"))
         if not paths:
@@ -156,6 +168,16 @@ SKEWER_DEB_URL = (
     "https://github.com/astibal/saslik-skewer/releases/latest/download/"
     "skewer-linux-amd64.deb"
 )
+SKEWER_WINDOWS_URLS = {
+    "installer": (
+        "https://github.com/astibal/saslik-skewer/releases/latest/download/"
+        "SkewerSetup.exe"
+    ),
+    "portable": (
+        "https://github.com/astibal/saslik-skewer/releases/latest/download/"
+        "skewer-windows-amd64.zip"
+    ),
+}
 TUNTOM_DEB_URLS = {
     "amd64": "https://github.com/astibal/tuntom/releases/latest/download/tuntom_amd64.deb",
     "arm64": "https://github.com/astibal/tuntom/releases/latest/download/tuntom_arm64.deb",
@@ -280,6 +302,14 @@ def _fetch_github_deb(url: str, label: str):
 
 def fetch_skewer_deb():
     return _fetch_github_deb(SKEWER_DEB_URL, "Skewer")
+
+
+def fetch_skewer_windows(kind: str):
+    try:
+        url = SKEWER_WINDOWS_URLS[kind]
+    except KeyError as exc:
+        raise ValueError("Unsupported Skewer Windows package.") from exc
+    return _fetch_github_deb(url, "Skewer")
 
 
 def fetch_tuntom_deb(architecture: str):
@@ -914,6 +944,10 @@ class Handler(BaseHTTPRequestHandler):
         downloads = [
             {"title": "Skewer", "platform": "Linux DEB · amd64",
              "url": "/downloads/skewer-linux-amd64.deb"},
+            {"title": "Skewer", "platform": "Windows installer · amd64",
+             "url": "/downloads/SkewerSetup.exe"},
+            {"title": "Skewer", "platform": "Windows portable ZIP · amd64",
+             "url": "/downloads/skewer-windows-amd64.zip"},
             {"title": "Tuntom", "platform": "Linux DEB · amd64",
              "url": "/downloads/tuntom_amd64.deb"},
             {"title": "Tuntom", "platform": "Linux DEB · arm64",
@@ -1127,6 +1161,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._custom_installer_download(path.removeprefix("/downloads/custom/"))
         public_downloads = {
             "/downloads/skewer-linux-amd64.deb",
+            "/downloads/SkewerSetup.exe",
+            "/downloads/skewer-windows-amd64.zip",
             "/downloads/tuntom-linux-amd64.deb",
             "/downloads/tuntom_amd64.deb",
             "/downloads/tuntom_arm64.deb",
@@ -1158,6 +1194,46 @@ class Handler(BaseHTTPRequestHandler):
             snapshot["skewer_connected"] = time.monotonic() - self.server.skewer_last_seen < 30.0
             snapshot["degraded_mode"] = self.server.degraded_status()
             return self._json(snapshot)
+        if path == "/api/takeaways":
+            jobs = list_takeaway_jobs(self.server.data_root)
+            active = next((item for item in jobs
+                           if item.get("state") in {"queued", "running"}), None)
+            visible = active or next((item for item in jobs
+                                      if item.get("state") in {"done", "failed"}
+                                      and not item.get("acknowledged")), None)
+            return self._json({"jobs": jobs, "indicator": visible})
+        if path == "/api/takeaways/preflight":
+            try:
+                return self._json(takeaway_preflight(
+                    self.server.data_root, takeaway_source_checkout()))
+            except RuntimeError as exc:
+                return self._json({"ok": False, "errors": [str(exc)],
+                                   "warnings": []}, HTTPStatus.SERVICE_UNAVAILABLE)
+        if path == "/api/takeaways/download":
+            job_id = parse_qs(parsed.query).get("job", [""])[0]
+            jobs = {item["id"]: item for item in list_takeaway_jobs(self.server.data_root)}
+            state = jobs.get(job_id, {})
+            artifact = str(state.get("artifact", ""))
+            if state.get("state") != "done" or not artifact or Path(artifact).name != artifact:
+                return self._json({"error": "Takeaway artefakt není dostupný."},
+                                  HTTPStatus.NOT_FOUND)
+            target = takeaway_jobs_root(self.server.data_root) / job_id / artifact
+            if not target.is_file():
+                return self._json({"error": "Takeaway artefakt chybí."},
+                                  HTTPStatus.NOT_FOUND)
+            update_takeaway_job(self.server.data_root, job_id, acknowledged=True)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{artifact}"')
+            self.send_header("Content-Length", str(target.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                with target.open("rb") as source:
+                    shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if path == "/api/licensing":
             try:
                 return self._json({"available": True, **licensing_report()})
@@ -1181,6 +1257,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(skewer_discovery(self.server.runner.instance), cors_origin="*")
         if path == "/downloads/skewer-linux-amd64.deb":
             return self._skewer_download()
+        if path == "/downloads/SkewerSetup.exe":
+            return self._skewer_windows_download("installer")
+        if path == "/downloads/skewer-windows-amd64.zip":
+            return self._skewer_windows_download("portable")
         if path in {"/downloads/tuntom-linux-amd64.deb", "/downloads/tuntom_amd64.deb"}:
             return self._tuntom_download("amd64")
         if path == "/downloads/tuntom_arm64.deb":
@@ -1438,6 +1518,30 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             package.close()
 
+    def _skewer_windows_download(self, kind: str) -> None:
+        filenames = {
+            "installer": ("SkewerSetup.exe", "application/vnd.microsoft.portable-executable"),
+            "portable": ("skewer-windows-amd64.zip", "application/zip"),
+        }
+        try:
+            filename, content_type = filenames[kind]
+            package, size = fetch_skewer_windows(kind)
+        except (KeyError, HTTPError, URLError, OSError, ValueError) as exc:
+            return self._json({"error": f"Skewer balíček se nepodařilo stáhnout: {exc}"},
+                              HTTPStatus.BAD_GATEWAY)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            shutil.copyfileobj(package, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            package.close()
+
     def _files_upload(self, query: str) -> None:
         try:
             if self.headers.get("X-Saslik-CSRF") != self.server.csrf:
@@ -1598,7 +1702,7 @@ class Handler(BaseHTTPRequestHandler):
                 target = str(value.get("host") or host)
                 if not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", target):
                     raise ValueError()
-                link = store.link(target, self.server.psk_server.server_address[1])
+                link = store.link(target, self.server.public_psk_port)
                 return self._json({"link": link,
                                    "qr": pairing_qr_data_url(link)})
             except (ValueError, TypeError, KeyError):
@@ -1618,7 +1722,8 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
                         "/api/account/password", "/api/account/theme", "/api/public-installers",
-                        "/api/network-plan", "/api/probe-settings", "/api/probe/run"}:
+                        "/api/network-plan", "/api/probe-settings", "/api/probe/run",
+                        "/api/takeaways/action"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -1630,6 +1735,48 @@ class Handler(BaseHTTPRequestHandler):
                                   HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             length = min(declared, limit)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/takeaways/action":
+                operation = str(body.get("operation", ""))
+                job_id = str(body.get("job", ""))
+                if operation == "start":
+                    if any(item.get("state") in {"queued", "running"}
+                           for item in list_takeaway_jobs(self.server.data_root)):
+                        return self._json({"error": "Jiný Takeaway se už peče."},
+                                          HTTPStatus.CONFLICT)
+                    available = {item.name for item in Instance.discover()
+                                 if item.data_dir.is_dir()}
+                    requested = [str(item) for item in body.get("workspaces", [])]
+                    if not requested or not set(requested).issubset(available):
+                        return self._json({"error": "Vyber existující workspace."},
+                                          HTTPStatus.BAD_REQUEST)
+                    check = takeaway_preflight(self.server.data_root,
+                                               takeaway_source_checkout())
+                    if not check["ok"]:
+                        return self._json({"error": " ".join(check["errors"]),
+                                           "preflight": check}, HTTPStatus.CONFLICT)
+                    if check["warnings"] and not body.get("accept_warnings"):
+                        return self._json({"error": "Takeaway vyžaduje potvrzení varování.",
+                                           "preflight": check}, HTTPStatus.CONFLICT)
+                    state = create_takeaway_job(self.server.data_root, requested)
+                    result = self.server.guardian_exchange("takeaway-start", job=state["id"])
+                    if not result.get("ok"):
+                        update_takeaway_job(self.server.data_root, state["id"], state="failed",
+                                            error=result.get("error", "Guardian job nespustil."))
+                        return self._json({"error": result.get("error", "Job nelze spustit.")},
+                                          HTTPStatus.SERVICE_UNAVAILABLE)
+                    return self._json({"ok": True, "job": state}, HTTPStatus.ACCEPTED)
+                if operation == "cancel":
+                    result = self.server.guardian_exchange("takeaway-cancel", job=job_id)
+                    return self._json(result, HTTPStatus.OK if result.get("ok")
+                                      else HTTPStatus.SERVICE_UNAVAILABLE)
+                if operation == "acknowledge":
+                    return self._json({"ok": True, "job": update_takeaway_job(
+                        self.server.data_root, job_id, acknowledged=True)})
+                if operation == "delete":
+                    delete_takeaway_job(self.server.data_root, job_id)
+                    return self._json({"ok": True})
+                return self._json({"error": "Neznámá Takeaway operace."},
+                                  HTTPStatus.BAD_REQUEST)
             if path == "/api/probe-settings":
                 previous = load_probe_settings(self.server.data_root)
                 value = save_probe_settings(
@@ -2314,6 +2461,18 @@ class Handler(BaseHTTPRequestHandler):
         self.server.skewer_audit(f"{peer} {self.command} {path} -> {code}")
 
 
+def public_service_ports(port: int) -> tuple[int, int]:
+    """Return externally advertised UI/PSK ports, independent of bind ports."""
+    try:
+        ui = int(os.environ.get("SASLIK_PUBLIC_UI_PORT", str(port)))
+        psk = int(os.environ.get("SASLIK_PUBLIC_PSK_PORT", str(port + 1)))
+    except ValueError as exc:
+        raise RuntimeError("Neplatný veřejný port Sasliku.") from exc
+    if not all(1 <= value <= 65535 for value in (ui, psk)):
+        raise RuntimeError("Neplatný veřejný port Sasliku.")
+    return ui, psk
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765,
           runner: LabRunner | None = None, *, devel: bool = False) -> None:
     try:
@@ -2324,6 +2483,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         print("VAROVÁNÍ: Saslik UI a laboratorní porty budou dostupné ze sítě.")
         print("Používej pouze důvěryhodnou laboratorní síť nebo host firewall.")
     active_runner = runner or LabRunner()
+    public_ui_port, public_psk_port = public_service_ports(port)
     active_runner.devel = devel
     certificate, key = ensure_portal_tls(
         data_root() / "portal-tls", host,
@@ -2334,6 +2494,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
     # Python; auth_request sends only the session cookie to this server.
     server = SaslikServer(("127.0.0.1", 0), active_runner,
                           devel=devel, log_root=data_root())
+    server.public_psk_port = public_psk_port
     server.tls_certificate = certificate
     gateway = NginxGateway(
         host=host, port=port, upstream_port=server.server_port,
@@ -2350,7 +2511,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         return {**skewer_discovery(active_runner.instance,
                                    address_pool=active_runner.network_plan.workspace_pool),
                 **skewer_ca(active_runner.lab, active_runner.instance),
-                "lab_status": detail, "ui_port": port,
+                "lab_status": detail, "ui_port": public_ui_port,
                 "features": tunnel_features()}
     def paired_report(client, payload):
         report = normalize_skewer_report(payload)

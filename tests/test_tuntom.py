@@ -91,3 +91,11 @@ class TuntomTests(unittest.TestCase):
             leases.acquire("overflow")
         with self.assertRaises(ValueError):
             TunnelLeases(lambda _: None, pool="10.253.0.0/24")
+
+    def test_public_port_base_can_differ_from_internal_listener(self):
+        leases = TunnelLeases(lambda _: None, public_port_base=12000)
+        self.assertEqual(leases.acquire("peer").public()["port"], 12001)
+
+    def test_public_port_base_is_bounded(self):
+        with self.assertRaisesRegex(ValueError, "public Tuntom"):
+            TunnelLeases(lambda _: None, public_port_base=65300)

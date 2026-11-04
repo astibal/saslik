@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import os
 import secrets
 import threading
 import time
@@ -41,6 +42,7 @@ class TunnelLease:
     context: str
     deadline: float
     pool: str
+    public_port_base: int = 40000
     ready: bool = False
 
     def public(self) -> dict:
@@ -48,7 +50,7 @@ class TunnelLease:
         base = int(network.network_address) + self.slot * 4
         return {
             "version": 1, "transport": "tuntom", "id": self.slot,
-            "context": self.context, "port": 40000 + self.slot,
+            "context": self.context, "port": self.public_port_base + self.slot,
             "server_interface": f"skt{self.slot}s",
             "client_interface": f"skt{self.slot}c",
             "server_address": f"{ipaddress.IPv4Address(base + 1)}/30",
@@ -66,13 +68,22 @@ class TunnelLeases:
     """
 
     def __init__(self, stop: Callable[[TunnelLease], None], *, pool="10.253.0.0/22",
-                 ttl=60, clock=time.monotonic, acquire_slot=None, release_slot=None):
+                 ttl=60, clock=time.monotonic, acquire_slot=None, release_slot=None,
+                 public_port_base: int | None = None):
         network = ipaddress.IPv4Network(pool)
         if not network.subnet_of(ipaddress.IPv4Network("10.0.0.0/8")) or network.prefixlen > 22:
             raise ValueError("Tunnel pool must contain 256 /30s inside 10/8")
         if not 10 <= ttl <= 3600:
             raise ValueError("Invalid tunnel lease timeout")
+        if public_port_base is None:
+            try:
+                public_port_base = int(os.environ.get("SASLIK_TUNTOM_PUBLIC_PORT_BASE", "40000"))
+            except ValueError as exc:
+                raise ValueError("Invalid public Tuntom port base") from exc
+        if not 1024 <= public_port_base <= 65280:
+            raise ValueError("Invalid public Tuntom port base")
         self.pool, self.ttl, self.clock, self.stop = str(network), ttl, clock, stop
+        self.public_port_base = public_port_base
         self.leases: dict[str, TunnelLease] = {}
         self.lock = threading.RLock()
         self.acquire_slot = acquire_slot
@@ -92,7 +103,8 @@ class TunnelLeases:
                     next((i for i in range(1, 256) if i not in occupied), None))
             if slot is None:
                 raise ValueError("No free tuntom endpoints")
-            lease = TunnelLease(peer, slot, secrets.token_hex(32), self.clock() + self.ttl, self.pool)
+            lease = TunnelLease(peer, slot, secrets.token_hex(32), self.clock() + self.ttl,
+                                self.pool, self.public_port_base)
             self.leases[peer] = lease
             return lease
 
