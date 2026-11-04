@@ -622,6 +622,37 @@ class SaslikServer(ThreadingHTTPServer):
             "guardian": self._guardian_health_error,
         }
 
+    @staticmethod
+    def _expected_request_error(error: BaseException) -> bool:
+        return isinstance(error, (BrokenPipeError, ConnectionAbortedError,
+                                  ConnectionResetError, ssl.SSLEOFError))
+
+    def _report_request_error(self, client_address, error: BaseException) -> None:
+        if self._expected_request_error(error) or sys.is_finalizing():
+            return
+        try:
+            peer = client_address[0] if client_address else "unknown"
+            detail = " ".join(str(error).split())[:500]
+            logging.error("HTTP request from %s failed: %s%s", peer,
+                          type(error).__name__, f": {detail}" if detail else "")
+        except BaseException:
+            # This is the outermost request boundary. Logging must never turn
+            # one failed client request into threading.excepthook recursion.
+            pass
+
+    def handle_error(self, request, client_address) -> None:
+        error = sys.exception()
+        if error is not None:
+            self._report_request_error(client_address, error)
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        except BaseException as error:
+            # ThreadingMixIn catches Exception, but not shutdown/finalization
+            # failures derived directly from BaseException.
+            self._report_request_error(client_address, error)
+
     def network_plan_busy(self) -> bool:
         """Network identities are immutable while any workspace is active."""
         for instance in Instance.discover():
@@ -1582,9 +1613,11 @@ class Handler(BaseHTTPRequestHandler):
         if not path.is_file():
             return self.send_error(HTTPStatus.NOT_FOUND, "CA ještě není vygenerovaná")
         data = path.read_bytes()
+        certificate_name = re.sub(r"[^A-Za-z0-9._-]+", "_", identity or instance).strip("._-")
+        filename = f"Saslik_{certificate_name or 'workspace'}_CA.pem"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/x-pem-file")
-        self.send_header("Content-Disposition", 'attachment; filename="saslik-ca.pem"')
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

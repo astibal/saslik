@@ -5,13 +5,26 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from saslik.server import (CliSession, Handler, SpiderBootstrapStore,
+from saslik.server import (CliSession, Handler, SaslikServer, SpiderBootstrapStore,
                            client_network_view,
                            normalize_skewer_report,
                            pairing_qr_data_url,
                            public_service_ports,
                            fetch_skewer_deb, fetch_skewer_windows, skewer_discovery,
                            web_log_tail)
+
+
+class RequestErrorBoundaryTests(unittest.TestCase):
+    def test_expected_disconnects_are_quiet(self):
+        server = SaslikServer.__new__(SaslikServer)
+        with patch("saslik.server.logging.error") as report:
+            server._report_request_error(("127.0.0.1", 1234), BrokenPipeError())
+        report.assert_not_called()
+
+    def test_logging_failure_cannot_escape_request_boundary(self):
+        server = SaslikServer.__new__(SaslikServer)
+        with patch("saslik.server.logging.error", side_effect=RuntimeError("stderr failed")):
+            server._report_request_error(("127.0.0.1", 1234), ValueError("bad request"))
 
 
 class PublicServicePortTests(unittest.TestCase):
