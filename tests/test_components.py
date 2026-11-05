@@ -151,12 +151,49 @@ class ComponentTests(unittest.TestCase):
     @patch("saslik.components._run")
     def test_selective_spider_stop_does_not_touch_smithproxy(self, run):
         with tempfile.TemporaryDirectory() as directory:
-            SystemdComponents(Path(directory), "lab1").stop_component("spider")
+            manager = SystemdComponents(Path(directory), "lab1")
+            with patch.object(manager, "_stop_component_orphans") as stop_orphans:
+                manager.stop_component("spider")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertTrue(any("ws-001-spider.service" in command for command in commands))
         self.assertTrue(any("ws-001-frontend.service" in command for command in commands))
         self.assertTrue(any("ws-001-frontend-tls.service" in command for command in commands))
         self.assertFalse(any("smithproxy" in " ".join(command) for command in commands))
+        stop_orphans.assert_called_once_with("spider")
+
+    def test_selective_orphan_match_is_workspace_and_component_specific(self):
+        manager = SystemdComponents(Path("/srv/saslik/instances/lab1"), "lab1")
+        match = manager._component_orphan_matches
+        self.assertTrue(match(
+            "pcap-viewer",
+            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
+            "capture-viewer --port 25174",
+        ))
+        self.assertTrue(match(
+            "pcap-viewer",
+            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
+            "capture-storage --port 15175",
+        ))
+        self.assertFalse(match(
+            "pcap-viewer",
+            "/srv/saslik/instances/other/runtime/pcap-viewer-venv/bin/"
+            "capture-viewer --port 25174",
+        ))
+        self.assertFalse(match(
+            "smithproxy",
+            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
+            "capture-viewer --port 25174",
+        ))
+        self.assertTrue(match(
+            "pcap-viewer",
+            "socat OPENSSL-LISTEN:15174,bind=10.240.0.2,reuseaddr,fork "
+            "TCP4:127.0.0.1:25174",
+        ))
+        self.assertFalse(match(
+            "spider",
+            "socat OPENSSL-LISTEN:15174,bind=10.240.0.2,reuseaddr,fork "
+            "TCP4:127.0.0.1:25174",
+        ))
 
     def test_runtime_has_no_profile_dimension(self):
         with tempfile.TemporaryDirectory() as directory:

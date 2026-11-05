@@ -602,6 +602,85 @@ class SystemdComponents:
         }
         return expected.get(filename, "\0") in command
 
+    def _component_orphan_matches(self, component: str, command: str) -> bool:
+        """Recognize a process belonging to one selectively managed component.
+
+        This is the migration fallback for processes which escaped an older
+        service implementation and have since been adopted by PID 1.  Current
+        services remain owned and stopped by their systemd control groups.
+        """
+        markers = {
+            "smithproxy": (str(self.lab / "build/smithproxy/smithproxy"),),
+            "spider": (str(self.lab / "build/spider/smithproxy-spider"),
+                       str(self.state / "frontend")),
+            "sift": (str(self.lab / "build/sift/siftd"),),
+            "lored": (str(self.lab / "build/lore/lored/lored"),),
+            "pcap-viewer": (
+                str(self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"),
+                str(self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"),
+            ),
+            "smithproxy-gui": (
+                str(self.lab / "build/smithproxy-gui/smithproxy-gui"),
+            ),
+        }
+        if any(marker in command for marker in markers.get(component, ())):
+            return True
+        if "socat" not in command:
+            return False
+        address = self.runtime.namespace_address
+        forwarders = {
+            "spider": (
+                (f"TCP4-LISTEN:{self.runtime.public_port('spider')}",
+                 f"TCP4:{address}:18080"),
+                (f"TCP4-LISTEN:{self.runtime.public_port('frontend')}",
+                 f"TCP4:{address}:15173"),
+                ("OPENSSL-LISTEN:15173", f"TCP4:127.0.0.1:{SPIDER_FRONTEND_PORT}"),
+            ),
+            "lored": (
+                (f"TCP4-LISTEN:{self.runtime.public_port('lored')}",
+                 f"TCP4:{address}:8091"),
+                (f"TCP4-LISTEN:8091,bind={address}", "TCP4:127.0.0.1:8091"),
+            ),
+            "pcap-viewer": (
+                (f"TCP4-LISTEN:{self.runtime.public_port('pcap-storage')}",
+                 f"TCP4:{address}:15175"),
+                (f"TCP4-LISTEN:{self.runtime.public_port('pcap-viewer')}",
+                 f"TCP4:{address}:15174"),
+                (f"TCP4-LISTEN:15175,bind={address}", "TCP4:127.0.0.1:15175"),
+                ("OPENSSL-LISTEN:15174", f"TCP4:127.0.0.1:{PCAP_VIEWER_PORT}"),
+            ),
+        }
+        return any(listener in command and target in command
+                   for listener, target in forwarders.get(component, ()))
+
+    def _stop_component_orphans(self, component: str) -> None:
+        """Stop selected-component processes left outside its systemd units."""
+        stopped: list[int] = []
+        for process in Path("/proc").glob("[0-9]*"):
+            try:
+                pid = int(process.name)
+                command = process.joinpath("cmdline").read_bytes().replace(
+                    b"\0", b" ").decode("utf-8")
+                if pid != os.getpid() and self._component_orphan_matches(
+                        component, command):
+                    os.kill(pid, signal.SIGTERM)
+                    stopped.append(pid)
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+        deadline = time.monotonic() + 2
+        while stopped and time.monotonic() < deadline:
+            stopped = [pid for pid in stopped if Path(f"/proc/{pid}").exists()]
+            if stopped:
+                time.sleep(0.05)
+        for pid in stopped:
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(
+                    b"\0", b" ").decode("utf-8")
+                if self._component_orphan_matches(component, command):
+                    os.kill(pid, signal.SIGKILL)
+            except (OSError, UnicodeDecodeError):
+                pass
+
     @staticmethod
     def _licensed_command(component: Component) -> tuple[str, ...]:
         runtime_command = list(component.command)
@@ -755,6 +834,10 @@ class SystemdComponents:
             unit = self.runtime.unit_name(name)
             _run(["systemctl", "stop", unit], tolerate=True, quiet=True)
             _run(["systemctl", "reset-failed", unit], tolerate=True, quiet=True)
+        # Older launchers could leave a daemon outside the transient unit.  A
+        # selective restart must remove it as well, otherwise it keeps the
+        # listen port and the replacement only waits until readiness times out.
+        self._stop_component_orphans(component)
 
     def restart_component(self, component: str) -> None:
         """Recreate only the selected component's transient services."""
