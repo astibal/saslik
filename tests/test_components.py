@@ -509,8 +509,10 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual([community], runnable)
         self.assertEqual({"community": community.command}, commands)
 
+    @patch("saslik.components._namespace_resolver_path")
     @patch("saslik.components._run")
-    def test_component_is_started_as_transient_service_in_lab_slice(self, run):
+    def test_component_is_started_as_transient_service_in_lab_slice(self, run, resolver):
+        resolver.return_value = Path("/etc/netns/ws-001/resolv.conf")
         with tempfile.TemporaryDirectory() as directory:
             manager = SystemdComponents(Path(directory), "lab1")
             capture_path = Path(directory) / "state/smithproxy-data"
@@ -525,6 +527,10 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--slice=ws-001.slice", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=NetworkNamespacePath=/run/netns/ws-001", command)
+        self.assertIn(
+            "--property=BindReadOnlyPaths=/etc/netns/ws-001/resolv.conf:/etc/resolv.conf",
+            command,
+        )
         self.assertIn(
             f"--property=BindPaths={capture_path}:/var/smithproxy/data", command)
         self.assertTrue(capture_path_created)

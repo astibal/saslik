@@ -34,6 +34,11 @@ SMITHPROXY_GUI_ENV_KEYS = (
 )
 
 
+def _namespace_resolver_path(namespace: str) -> Path | None:
+    path = Path("/etc/netns") / namespace / "resolv.conf"
+    return path if path.is_file() else None
+
+
 def _gateway_runtime_dir(lab: Path) -> Path:
     if lab.parent.name == "instances":
         return lab.parent.parent / "gateway"
@@ -728,6 +733,9 @@ class SystemdComponents:
             command.append(f"--property=ExecStopPost={hook}")
         if component.network_namespace:
             command.append(f"--property=NetworkNamespacePath=/run/netns/{component.network_namespace}")
+            resolver = _namespace_resolver_path(component.network_namespace)
+            if resolver:
+                command.append(f"--property=BindReadOnlyPaths={resolver}:/etc/resolv.conf")
         for source, destination in component.bind_paths:
             source.mkdir(parents=True, exist_ok=True)
             command.append(f"--property=BindPaths={source}:{destination}")
