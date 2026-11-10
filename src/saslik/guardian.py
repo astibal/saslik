@@ -21,7 +21,7 @@ from .maintenance import maintain_component_logs, repair_log_ownership
 from .runtime import WorkspaceRuntime
 from .takeaway_jobs import cancel_unit as cancel_takeaway_unit
 from .takeaway_jobs import start_unit as start_takeaway_unit
-from .instance import clone_instance, restore_instance_ownership
+from .instance import clone_instance, delete_instance, restore_instance_ownership
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
@@ -153,6 +153,10 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         clone_instance(str(payload["instance"]), new_name,
                                        dirty_sources=dirty_sources)
                         restore_instance_ownership(new_name, owner_uid)
+                    elif payload.get("action") == "delete-workspace":
+                        os.environ["SASLIK_DATA_DIR"] = str(root)
+                        os.environ["SASLIK_CONFIG_DIR"] = str(config_root)
+                        delete_instance(str(payload["instance"]))
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
                     send_response(connection, response)

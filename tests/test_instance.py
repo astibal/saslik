@@ -6,12 +6,28 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.instance import (
-    Instance, clone_instance, remember_instance, remembered_instance, rename_instance,
+    Instance, clone_instance, delete_instance, remember_instance, remembered_instance, rename_instance,
     repair_relocated_workspace, validate_instance_name,
 )
 
 
 class InstanceTests(unittest.TestCase):
+    def test_delete_removes_config_and_data_but_protects_default(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SASLIK_CONFIG_DIR": f"{directory}/config",
+                         "SASLIK_DATA_DIR": f"{directory}/data"}
+        ):
+            instance = Instance.load("discard-me")
+            instance.ensure_config()
+            (instance.data_dir / "marker").write_text("data", encoding="utf-8")
+
+            delete_instance("discard-me")
+
+            self.assertFalse(instance.config_dir.exists())
+            self.assertFalse(instance.data_dir.exists())
+            with self.assertRaises(RuntimeError):
+                delete_instance("default")
+
     def test_relocated_workspace_repairs_stale_sibling_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

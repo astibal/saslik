@@ -2142,7 +2142,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "workspace": instance.name})
         if any(value.get("state") in {"running", "starting"}
                for value in services.values()):
-            raise RuntimeError("Běžící workspace nelze přejmenovat ani klonovat.")
+            raise RuntimeError("Běžící workspace nelze přejmenovat, klonovat ani smazat.")
         if operation == "create":
             if workspace in {item.name for item in Instance.discover()}:
                 raise RuntimeError(f"Workspace už existuje: {workspace}")
@@ -2162,6 +2162,15 @@ class Handler(BaseHTTPRequestHandler):
                                        "Klonování workspace selhalo."))
             self.server.refresh_gateway()
             return self._json({"ok": True, "workspace": new_name})
+        if operation == "delete":
+            if instance.name == self.server.runner.instance:
+                raise RuntimeError("Aktuálně vybraný workspace nejdřív přepni na jiný.")
+            result = self.server.guardian_exchange("delete-workspace", instance)
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("error") or
+                                       "Smazání workspace selhalo."))
+            self.server.refresh_gateway()
+            return self._json({"ok": True, "workspace": workspace})
         if operation != "rename":
             raise RuntimeError("Neznámá workspace operace.")
         command = ["sudo", "-n", sys.executable, "-m", "saslik.instance", "rename",

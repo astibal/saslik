@@ -172,6 +172,17 @@ def rename_instance(old_name: str, new_name: str) -> None:
         raise
 
 
+def delete_instance(name: str) -> None:
+    instance = Instance.load(name)
+    if name == "default":
+        raise RuntimeError("Výchozí workspace 'default' nelze smazat.")
+    if not instance.config_dir.exists() and not instance.data_dir.exists():
+        raise RuntimeError(f"Workspace neexistuje: {name}")
+    for root in (instance.data_dir, instance.config_dir):
+        if root.exists():
+            shutil.rmtree(root)
+
+
 def _rewrite_workspace_paths(state: Path, old_root: Path, new_root: Path) -> None:
     old_value = str(old_root).encode()
     new_value = str(new_root).encode()
