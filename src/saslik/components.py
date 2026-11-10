@@ -32,6 +32,7 @@ SMITHPROXY_GUI_PORT = 18082
 SMITHPROXY_GUI_ENV_KEYS = (
     "SMITHPROXY_API_URL", "SMITHPROXY_API_KEY", "SMITHPROXY_CA_CERT",
 )
+SMITHPROXY_GUI_OPTIONAL_ENV_KEYS = ("SMITHPROXY_CLI",)
 
 
 def _namespace_resolver_path(namespace: str) -> Path | None:
@@ -85,8 +86,8 @@ def write_smithproxy_gui_environment(lab: Path) -> Path:
     missing = [key for key in SMITHPROXY_GUI_ENV_KEYS if not values.get(key)]
     if missing:
         raise RuntimeError("state.env neobsahuje GUI hodnoty: " + ", ".join(missing))
-    for key in SMITHPROXY_GUI_ENV_KEYS:
-        if any(character in values[key] for character in "\r\n\0"):
+    for key in (*SMITHPROXY_GUI_ENV_KEYS, *SMITHPROXY_GUI_OPTIONAL_ENV_KEYS):
+        if key in values and any(character in values[key] for character in "\r\n\0"):
             raise RuntimeError(f"state.env obsahuje neplatnou hodnotu {key}.")
     state = lab / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -94,8 +95,10 @@ def write_smithproxy_gui_environment(lab: Path) -> Path:
     descriptor, temporary = tempfile.mkstemp(prefix=".smithproxy-gui.env.", dir=state)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            for key in (*SMITHPROXY_GUI_ENV_KEYS, "SMITHPROXY_GUI_GATEWAY_SECRET"):
-                stream.write(f"{key}={values[key]}\n")
+            for key in (*SMITHPROXY_GUI_ENV_KEYS, *SMITHPROXY_GUI_OPTIONAL_ENV_KEYS,
+                        "SMITHPROXY_GUI_GATEWAY_SECRET"):
+                if key in values:
+                    stream.write(f"{key}={values[key]}\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o600)

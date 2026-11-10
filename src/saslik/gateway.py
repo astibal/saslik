@@ -51,7 +51,7 @@ def workspace_locations(instances: list[Instance], auth_secret: str,
             ("viewer", 15174, True, True, False, True, None),
             # The GUI is base-path aware and must see the public workspace
             # prefix; stripping it makes its root indistinguishable from a 404.
-            ("smithproxy-gui", 18082, False, True, False, True, None),
+            ("smithproxy-gui", 18082, False, True, True, True, None),
             ("smithproxy-api", 55580, True, False, False, False,
              "api/status/ping"),
             ("sift-api", 18081, False, False, False, False, "api/status"),

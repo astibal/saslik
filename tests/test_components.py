@@ -18,6 +18,7 @@ class ComponentTests(unittest.TestCase):
             "SMITHPROXY_API_URL=https://10.240.0.2:55580\n"
             f"SMITHPROXY_API_KEY={key}\n"
             "SMITHPROXY_CA_CERT=/workspace/state/certs/default/ca-cert.pem\n"
+            "SMITHPROXY_CLI=10.240.0.2:55000\n"
             "SMITHPROXY_CALLBACK_URL=http://127.0.0.1:18080/webhook\n"
             "SPIDER_TOKEN=test\n",
             encoding="utf-8",
@@ -74,7 +75,8 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(0o600, mode)
         self.assertIn("SMITHPROXY_API_KEY=first-secret", first)
         self.assertIn("SMITHPROXY_API_KEY=rotated-secret", second)
-        self.assertEqual(4, len(second.strip().splitlines()))
+        self.assertEqual(5, len(second.strip().splitlines()))
+        self.assertIn("SMITHPROXY_CLI=10.240.0.2:55000", second)
         gateway_line = next(line for line in second.splitlines()
                             if line.startswith("SMITHPROXY_GUI_GATEWAY_SECRET="))
         self.assertGreaterEqual(len(gateway_line.split("=", 1)[1]), 32)

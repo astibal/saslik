@@ -55,6 +55,8 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("proxy_pass http://10.240.0.2:18082;", gui)
         self.assertIn("proxy_set_header Host $http_host", gui)
         self.assertIn("X-Forwarded-Prefix /ws001/smithproxy-gui", gui)
+        self.assertIn("proxy_set_header Upgrade $http_upgrade", gui)
+        self.assertIn("proxy_set_header Connection $connection_upgrade", gui)
         self.assertIn(
             "X-Smithproxy-GUI-Gateway gui-gateway-secret-0123456789012345", gui
         )
