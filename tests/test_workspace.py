@@ -454,6 +454,21 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(b"SECRET=keep\n", env.read_bytes())
             self.assertEqual(b"custom-ca\n", ca.read_bytes())
 
+    def test_existing_cftar_ca_and_credentials_are_recognized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            certs = state / "certs/default"
+            certs.mkdir(parents=True)
+            config = state / "smithproxy.cftar"
+            env = state / "state.env"
+            config.write_bytes(b"binary-cftar")
+            env.write_bytes(b"SECRET=keep\n")
+
+            self.assertFalse(initialize_state(lab, "proxy"))
+            self.assertEqual(b"binary-cftar", config.read_bytes())
+            self.assertEqual(b"SECRET=keep\n", env.read_bytes())
+
     def test_existing_ca_requires_certificate_and_key(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)

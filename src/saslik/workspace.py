@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from .settings import setting_value
+from .smithproxy_config import active_config
 
 
 REPOSITORIES = {
@@ -778,14 +779,15 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
                      ca_cert: Path | None = None, ca_key: Path | None = None) -> bool:
     """Create state only for a new workspace; never rewrite existing config/CA."""
     state = lab / "state"
-    config = state / "smithproxy.cfg"
     certs = state / "certs/default"
     env = state / "state.env"
-    existing = (config.exists(), certs.exists(), env.exists())
+    config = active_config(state)
+    existing = (config is not None, certs.exists(), env.exists())
     if any(existing):
         if not all(existing):
             raise RuntimeError("Neúplný persistentní stav; config, CA a state.env musí existovat spolu.")
         return False
+    config = state / "smithproxy.cfg"
     if (ca_cert is None) != (ca_key is None):
         raise RuntimeError("Existující CA vyžaduje certifikát i privátní klíč.")
     if ca_cert is not None and ca_key is not None:

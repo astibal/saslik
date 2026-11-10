@@ -10,6 +10,24 @@ from saslik.settings import update_settings
 
 
 class ComponentTests(unittest.TestCase):
+    @patch("saslik.components._state_env", return_value={
+        "SMITHPROXY_API_URL": "https://localhost:55580",
+        "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",
+        "SMITHPROXY_API_KEY": "test", "SPIDER_TOKEN": "test",
+    })
+    def test_smithproxy_uses_migrated_cftar_config(self, _state):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            config = state / "smithproxy.cftar"
+            config.write_bytes(b"cftar")
+
+            smithproxy = next(item for item in SystemdComponents(
+                lab, "lab1").components() if item.name == "smithproxy")
+
+            self.assertEqual(str(config), smithproxy.command[2])
+
     @staticmethod
     def gui_lab(root: Path, key: str = "first-secret") -> Path:
         state = root / "state"

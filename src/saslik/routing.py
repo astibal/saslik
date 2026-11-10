@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .instance import Instance
 from .runtime import WorkspaceRuntime
+from .smithproxy_config import active_config
 
 
 PROBE_IF = "probe-in"
@@ -191,8 +192,9 @@ def routing_status(runtime: WorkspaceRuntime) -> int:
 
 def _root(action: str, lab: Path, uid: int, runtime: WorkspaceRuntime) -> int:
     if action in {"up", "namespace-up"}:
-        config = lab / "state/smithproxy.cfg"
-        if not config.is_file() or not re.search(r"\baccept_tproxy\s*=\s*true", config.read_text(), re.I):
+        config = active_config(lab / "state", required=True)
+        if (config.suffix != ".cftar" and
+                not re.search(r"\baccept_tproxy\s*=\s*true", config.read_text(), re.I)):
             raise RuntimeError("TPROXY není v konfiguraci aktivní; restartuj nejprve Saslik lab.")
         try:
             routing_up(uid, runtime) if action == "up" else namespace_up(runtime)

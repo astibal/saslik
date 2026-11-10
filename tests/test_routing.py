@@ -9,6 +9,19 @@ from saslik.runtime import WorkspaceRuntime
 
 
 class RoutingTests(unittest.TestCase):
+    @patch("saslik.routing.routing_up")
+    def test_cftar_config_is_accepted_by_root_start(self, routing_up):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            state = lab / "state"
+            state.mkdir()
+            (state / "smithproxy.cftar").write_bytes(b"binary")
+            runtime = WorkspaceRuntime.for_workspace(lab, "lab1")
+
+            self.assertEqual(0, _root("up", lab, 1000, runtime))
+
+            routing_up.assert_called_once_with(1000, runtime)
+
     def test_prepare_enables_transparent_workers_idempotently(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)

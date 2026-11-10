@@ -66,6 +66,7 @@ from .portal_tls import details as portal_tls_details
 from .portal_tls import ensure as ensure_portal_tls
 from .portal_tls import generate as generate_portal_tls
 from .maintenance import LOG_BACKUPS, PROCESS_LOG_LIMIT, RotatingLog, save_logpack
+from .smithproxy_config import is_initialized
 from .takeaway_jobs import (create_job as create_takeaway_job,
                             delete_job as delete_takeaway_job,
                             disk_preflight as takeaway_preflight,
@@ -2041,7 +2042,7 @@ class Handler(BaseHTTPRequestHandler):
                     address_pool=self.server.network_plan.workspace_pool).prefix,
                 "selected": instance.name == self.server.runner.instance,
                 "egress": instance.egress,
-                "initialized": (instance.data_dir / "state/smithproxy.cfg").is_file(),
+                "initialized": is_initialized(instance.data_dir / "state"),
                 "binaries": all((instance.data_dir / path).is_file() for path in (
                     "build/smithproxy/smithproxy", "build/spider/smithproxy-spider",
                     "build/sift/siftd")),

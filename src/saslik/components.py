@@ -24,6 +24,7 @@ from .gateway_secret import ensure_gateway_secret
 from .probe_settings import data_root_for_lab, load as load_probe_settings
 from .runtime import WorkspaceRuntime
 from .settings import component_environment, component_restart_on_failure, setting_value
+from .smithproxy_config import active_config
 
 
 SPIDER_FRONTEND_PORT = 25173
@@ -234,7 +235,7 @@ class SystemdComponents:
         pcap_storage = self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"
         lored = self.lab / "build/lore/lored/lored"
         smithproxy_gui = self.lab / "build/smithproxy-gui/smithproxy-gui"
-        config = self.state / "smithproxy.cfg"
+        config = active_config(self.state) or self.state / "smithproxy.cfg"
         socat = shutil.which("socat") or "socat"
         python = sys.executable
         frontend_server = self.lab / "src/smithproxy-spider/tools/serve-frontend.py"
@@ -442,7 +443,7 @@ class SystemdComponents:
     def _check_assets(self) -> None:
         required = [
             self.lab / "build/smithproxy/smithproxy",
-            self.state / "smithproxy.cfg",
+            active_config(self.state, required=True),
             self.state / "state.env",
             Path(f"/run/netns/{self.runtime.namespace}"),
             Path(f"/run/netns/{self.runtime.probe_namespace}"),
@@ -535,7 +536,9 @@ class SystemdComponents:
             env.write_text("\n".join(updated) + "\n", encoding="utf-8")
             print(f"Workspace runtime: aktualizuji endpointy v {env}.")
 
-        config = self.state / "smithproxy.cfg"
+        config = active_config(self.state)
+        if config is None or config.suffix == ".cftar":
+            return
         try:
             original = config.read_text(encoding="utf-8")
         except OSError:

@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 
 LOCKED_PATHS = {
     "state/smithproxy.cfg",
+    "state/smithproxy.cftar",
     "state/state.env",
     "state/smithproxy-gui.env",
     "state/identity-name",

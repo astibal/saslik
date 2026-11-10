@@ -17,6 +17,7 @@ from .health import collect as collect_health
 from .pasta import cleanup_needed as pasta_cleanup_needed
 from .runtime import WorkspaceRuntime
 from .network_plan import NetworkPlan
+from .smithproxy_config import is_initialized
 
 
 def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False,
@@ -143,7 +144,7 @@ class LabRunner:
                 "lines": lines,
                 "revision": self._job.revision,
                 "initialized": self.spider.is_dir(),
-                "config_initialized": (self.lab / "state/smithproxy.cfg").is_file(),
+                "config_initialized": is_initialized(self.lab / "state"),
                 "instance": self.instance,
                 "runtime": self.runtime.prefix,
                 "egress": self.egress,

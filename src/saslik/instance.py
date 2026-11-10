@@ -21,6 +21,7 @@ NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}$")
 # of a running appliance.
 PERSISTENT_STATE = (
     "smithproxy.cfg",
+    "smithproxy.cftar",
     "state.env",
     "identity-name",
     "workspace-settings.json",
