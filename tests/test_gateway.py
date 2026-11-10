@@ -53,12 +53,17 @@ class GatewayConfigurationTests(unittest.TestCase):
         gui = self.location(config, "/ws001/smithproxy-gui/")
         self.assertIn("auth_request /__saslik_auth", gui)
         self.assertIn("proxy_pass http://10.240.0.2:18082;", gui)
+        self.assertIn("proxy_set_header Host $http_host", gui)
         self.assertIn("X-Forwarded-Prefix /ws001/smithproxy-gui", gui)
         self.assertIn(
             "X-Smithproxy-GUI-Gateway gui-gateway-secret-0123456789012345", gui
         )
         self.assertNotIn(
             "X-Smithproxy-GUI-Gateway",
+            self.location(config, "/ws001/spider/"),
+        )
+        self.assertIn(
+            "proxy_set_header Host 127.0.0.1",
             self.location(config, "/ws001/spider/"),
         )
         self.assertIn("proxy_buffering off", gui)

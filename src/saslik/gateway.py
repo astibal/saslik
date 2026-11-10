@@ -80,6 +80,10 @@ def workspace_locations(instances: list[Instance], auth_secret: str,
                 f"{gui_gateway_secret};"
                 if suffix == "smithproxy-gui" else ""
             )
+            # GUI mutations compare the browser Origin against Host. Preserve
+            # the public authority (including the non-default portal port)
+            # instead of exposing the internal upstream identity.
+            proxy_host = "$http_host" if suffix == "smithproxy-gui" else "127.0.0.1"
             # A trailing slash replaces the matched prefix. Prefix-aware UI
             # servers receive the original URI and strip SCRIPT_NAME themselves.
             upstream = f"{scheme}://{address}:{port}" + ("" if preserve_path else "/")
@@ -87,7 +91,7 @@ def workspace_locations(instances: list[Instance], auth_secret: str,
     location ^~ {prefix}/{suffix}/ {{
         {auth.lstrip()}
         proxy_http_version 1.1;
-        proxy_set_header Host 127.0.0.1;
+        proxy_set_header Host {proxy_host};
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Prefix {prefix}/{suffix};{upgrade}{gui_handoff}
         proxy_pass {upstream};{tls_options}
