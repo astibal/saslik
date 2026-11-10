@@ -7,11 +7,29 @@ from unittest.mock import patch
 
 from saslik.instance import (
     Instance, clone_instance, remember_instance, remembered_instance, rename_instance,
-    validate_instance_name,
+    repair_relocated_workspace, validate_instance_name,
 )
 
 
 class InstanceTests(unittest.TestCase):
+    def test_relocated_workspace_repairs_stale_sibling_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "instances/old-name"
+            current = root / "instances/new-name"
+            state = current / "state"
+            state.mkdir(parents=True)
+            (state / "smithproxy.cfg").write_text(
+                f'certs_path = "{old}/state/certs/default/"\n', encoding="utf-8")
+            (state / "state.env").write_text(
+                f"SMITHPROXY_CA_CERT={old}/state/certs/default/ca-cert.pem\n",
+                encoding="utf-8")
+
+            self.assertTrue(repair_relocated_workspace(current))
+            self.assertFalse(repair_relocated_workspace(current))
+            self.assertIn(str(current), (state / "smithproxy.cfg").read_text())
+            self.assertNotIn(str(old), (state / "state.env").read_text())
+
     def test_last_workspace_is_persistent(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"SASLIK_CONFIG_DIR": directory}
@@ -85,10 +103,21 @@ class InstanceTests(unittest.TestCase):
             old.ensure_config()
             old.data_dir.mkdir(parents=True, exist_ok=True)
             (old.data_dir / "marker").write_text("kept", encoding="utf-8")
+            state = old.data_dir / "state"
+            state.mkdir()
+            (state / "smithproxy.cfg").write_text(
+                f'certs_path = "{old.data_dir}/state/certs"', encoding="utf-8")
+            (state / "state.env").write_text(
+                f"SMITHPROXY_CA_CERT={old.data_dir}/state/certs/ca.pem\n",
+                encoding="utf-8")
             rename_instance("lab1", "demo")
             new = Instance.load("demo")
             self.assertTrue((new.config_dir / "saslik.toml").is_file())
             self.assertEqual("kept", (new.data_dir / "marker").read_text(encoding="utf-8"))
+            self.assertNotIn(str(old.data_dir),
+                             (new.data_dir / "state/smithproxy.cfg").read_text())
+            self.assertIn(str(new.data_dir),
+                          (new.data_dir / "state/state.env").read_text())
             self.assertEqual("ws-001", new.runtime_prefix)
 
     def test_clone_copies_only_persistent_workspace_state(self):

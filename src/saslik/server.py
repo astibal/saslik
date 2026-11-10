@@ -41,7 +41,7 @@ import segno
 
 from .runner import LabRunner, data_root
 from .ca import install_store, remove_store, store_status
-from .instance import Instance, remember_instance
+from .instance import Instance, config_root, remember_instance
 from .gateway import GatewayError, NginxGateway
 from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
@@ -720,6 +720,7 @@ class SaslikServer(ThreadingHTTPServer):
                        "--property=Restart=no", sys.executable, "-m", "saslik.guardian",
                        "--socket", str(self.guardian_socket), "--owner-uid", str(owner_uid),
                        "--parent-pid", str(os.getpid()), "--data-root", str(data_root()),
+                       "--config-root", str(config_root()),
                        "--lab", str(self.runner.lab), "--instance", self.runner.instance,
                        "--expose-address", self.runner.expose_address]
             if self.devel:
@@ -2152,12 +2153,13 @@ class Handler(BaseHTTPRequestHandler):
             self.server.refresh_gateway()
             return self._json({"ok": True, "workspace": instance.name})
         if operation == "clone":
-            command = [sys.executable, "-m", "saslik.instance", "clone",
-                       workspace, new_name]
-            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                    text=True)
-            if result.returncode:
-                raise RuntimeError(result.stderr.strip() or "Klonování workspace selhalo.")
+            dirty_sources = source_changes(instance.data_dir)
+            result = self.server.guardian_exchange(
+                "clone-workspace", instance, new_name=new_name,
+                dirty_sources=dirty_sources)
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("error") or
+                                       "Klonování workspace selhalo."))
             self.server.refresh_gateway()
             return self._json({"ok": True, "workspace": new_name})
         if operation != "rename":

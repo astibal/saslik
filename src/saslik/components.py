@@ -504,6 +504,9 @@ class SystemdComponents:
 
     def _migrate_internal_endpoints(self) -> None:
         """Refresh generated endpoints from the stable workspace identity."""
+        from .instance import repair_relocated_workspace
+        if repair_relocated_workspace(self.lab):
+            print(f"Workspace runtime: opravuji cesty po přejmenování {self.lab}.")
         env = self.state / "state.env"
         try:
             lines = env.read_text(encoding="utf-8").splitlines()

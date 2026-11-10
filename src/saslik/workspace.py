@@ -493,6 +493,21 @@ def install_viewer(lab: Path) -> None:
           str(viewer_source)])
 
 
+def _prepare_cmake_build(source: Path, destination: Path) -> None:
+    """Discard a CMake tree whose absolute source path no longer matches."""
+    cache = destination / "CMakeCache.txt"
+    try:
+        lines = cache.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    prefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
+    cached_source = next((line.removeprefix(prefix) for line in lines
+                          if line.startswith(prefix)), "")
+    if cached_source and Path(cached_source) != source.resolve():
+        print(f"CMake: workspace se přestěhoval, obnovuji {destination}.")
+        shutil.rmtree(destination)
+
+
 def build(lab: Path, *, devel: bool = False) -> None:
     jobs = f"-j{os.cpu_count() or 1}"
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
@@ -515,6 +530,7 @@ def build(lab: Path, *, devel: bool = False) -> None:
             (lab / "src/lored", lab / "build/lore", ["-DBUILD_TESTING=OFF"], "lored"))
     for source, destination, options, target in projects:
         options = _project_options(source, options)
+        _prepare_cmake_build(source, destination)
         _run(["cmake", "-S", str(source), "-B", str(destination),
               f"-DCMAKE_BUILD_TYPE={build_type}", *options])
         command = ["cmake", "--build", str(destination), jobs]
@@ -572,6 +588,7 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
         return
     options = _project_options(source, options)
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
+    _prepare_cmake_build(source, destination)
     _run(["cmake", "-S", str(source), "-B", str(destination),
           f"-DCMAKE_BUILD_TYPE={build_type}", *options])
     command = ["cmake", "--build", str(destination), f"-j{os.cpu_count() or 1}"]

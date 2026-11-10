@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import pwd
 import re
 import shutil
 import sys
@@ -163,13 +165,51 @@ def rename_instance(old_name: str, new_name: str) -> None:
         if old.data_dir.exists():
             new.data_dir.parent.mkdir(parents=True, exist_ok=True)
             old.data_dir.rename(new.data_dir)
+            _rewrite_workspace_paths(new.data_dir / "state", old.data_dir, new.data_dir)
     except Exception:
         if moved_config and new.config_dir.exists() and not old.config_dir.exists():
             new.config_dir.rename(old.config_dir)
         raise
 
 
-def clone_instance(source_name: str, new_name: str) -> None:
+def _rewrite_workspace_paths(state: Path, old_root: Path, new_root: Path) -> None:
+    old_value = str(old_root).encode()
+    new_value = str(new_root).encode()
+    for name in ("smithproxy.cfg", "state.env"):
+        path = state / name
+        if not path.is_file() or path.is_symlink():
+            continue
+        content = path.read_bytes()
+        if old_value in content:
+            path.write_bytes(content.replace(old_value, new_value))
+
+
+def repair_relocated_workspace(data_dir: Path) -> bool:
+    """Repair stale sibling-instance paths left by an older Saslik rename."""
+    state = data_dir / "state"
+    current = data_dir.resolve()
+    stale_roots: set[Path] = set()
+    pattern = re.compile(rb"(/[^\t\r\n \"']+)/state/")
+    for name in ("smithproxy.cfg", "state.env"):
+        path = state / name
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        for value in pattern.findall(content):
+            try:
+                candidate = Path(value.decode()).resolve()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if candidate != current and candidate.parent == current.parent:
+                stale_roots.add(candidate)
+    for stale in stale_roots:
+        _rewrite_workspace_paths(state, stale, current)
+    return bool(stale_roots)
+
+
+def clone_instance(source_name: str, new_name: str,
+                   dirty_sources: list[str] | None = None) -> None:
     source = Instance.load(source_name)
     new_name = validate_instance_name(new_name)
     if source_name == new_name:
@@ -211,21 +251,19 @@ def clone_instance(source_name: str, new_name: str) -> None:
                     shutil.copytree(old, new, symlinks=True)
                 else:
                     shutil.copy2(old, new, follow_symlinks=False)
-            old_root = str(source.data_dir).encode()
-            new_root = str(target.data_dir).encode()
-            for pattern in ("smithproxy.cfg", "state.env"):
-                for path in target_state.rglob(pattern):
-                    if path.is_file() and not path.is_symlink():
-                        content = path.read_bytes()
-                        if old_root in content:
-                            path.write_bytes(content.replace(old_root, new_root))
-        from .workspace import source_changes
-        dirty_sources = source_changes(source.data_dir)
+            _rewrite_workspace_paths(target_state, source.data_dir, target.data_dir)
+        from .workspace import REPOSITORIES, source_changes
+        if dirty_sources is None:
+            dirty_sources = source_changes(source.data_dir)
+        elif any(name not in REPOSITORIES for name in dirty_sources):
+            raise RuntimeError("Klon obsahuje neznámý zdrojový strom.")
         if dirty_sources:
             target_sources = target.data_dir / "src"
             target_sources.mkdir(parents=True, exist_ok=True)
             created_data = True
             for name in dirty_sources:
+                if not (source.data_dir / "src" / name / ".git").exists():
+                    raise RuntimeError(f"Zdrojový strom pro klon neexistuje: {name}")
                 shutil.copytree(source.data_dir / "src" / name,
                                 target_sources / name, symlinks=True)
             target_state = target.data_dir / "state"
@@ -238,6 +276,17 @@ def clone_instance(source_name: str, new_name: str) -> None:
         if created_config:
             shutil.rmtree(target.config_dir, ignore_errors=True)
         raise
+
+
+def restore_instance_ownership(name: str, owner_uid: int) -> None:
+    """Return a privileged clone to the desktop user without following links."""
+    instance = Instance.load(name)
+    owner_gid = pwd.getpwuid(owner_uid).pw_gid
+    for root in (instance.config_dir, instance.data_dir):
+        if not root.exists():
+            continue
+        for path in (root, *root.rglob("*")):
+            os.chown(path, owner_uid, owner_gid, follow_symlinks=False)
 
 
 def main(argv: list[str] | None = None) -> int:

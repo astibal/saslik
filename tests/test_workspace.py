@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from saslik.workspace import (
-    _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
+    _prepare_cmake_build, _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
     _worktree_matches_ref,
     component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
     ensure_runtime_server_certificate, save_binary_bundle,
@@ -17,6 +17,39 @@ from saslik.workspace import (
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_moved_workspace_discards_stale_cmake_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "new-name/src/project"
+            destination = root / "new-name/build/project"
+            source.mkdir(parents=True)
+            destination.mkdir(parents=True)
+            (destination / "CMakeCache.txt").write_text(
+                "CMAKE_HOME_DIRECTORY:INTERNAL=/old-name/src/project\n",
+                encoding="utf-8",
+            )
+            (destination / "old-artifact").write_text("stale", encoding="utf-8")
+
+            _prepare_cmake_build(source, destination)
+
+            self.assertFalse(destination.exists())
+
+    def test_current_cmake_tree_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src/project"
+            destination = root / "build/project"
+            source.mkdir(parents=True)
+            destination.mkdir(parents=True)
+            (destination / "CMakeCache.txt").write_text(
+                f"CMAKE_HOME_DIRECTORY:INTERNAL={source.resolve()}\n",
+                encoding="utf-8",
+            )
+
+            _prepare_cmake_build(source, destination)
+
+            self.assertTrue(destination.exists())
+
     def test_runtime_certificate_renewal_updates_portal_api_copy(self):
         class Runtime:
             namespace_address = "10.240.0.2"

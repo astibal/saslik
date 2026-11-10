@@ -21,6 +21,7 @@ from .maintenance import maintain_component_logs, repair_log_ownership
 from .runtime import WorkspaceRuntime
 from .takeaway_jobs import cancel_unit as cancel_takeaway_unit
 from .takeaway_jobs import start_unit as start_takeaway_unit
+from .instance import clone_instance, restore_instance_ownership
 
 
 UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
@@ -56,6 +57,7 @@ def parent_alive(pid: int) -> bool:
 
 
 def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
+          config_root: Path,
           lab: Path, instance: str, expose_address: str, *, devel: bool = False) -> None:
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
@@ -137,6 +139,20 @@ def serve(socket_path: Path, owner_uid: int, parent_pid: int, data_root: Path,
                         start_takeaway_unit(root, str(payload.get("job", "")), owner_uid)
                     elif payload.get("action") == "takeaway-cancel":
                         cancel_takeaway_unit(root, str(payload.get("job", "")))
+                    elif payload.get("action") == "clone-workspace":
+                        # Instance discovery normally follows the invoking user's
+                        # XDG paths. A system guardian has its own HOME, so pin
+                        # both roots explicitly for this privileged operation.
+                        os.environ["SASLIK_DATA_DIR"] = str(root)
+                        os.environ["SASLIK_CONFIG_DIR"] = str(config_root)
+                        new_name = str(payload.get("new_name", ""))
+                        dirty_sources = payload.get("dirty_sources")
+                        if not isinstance(dirty_sources, list) or not all(
+                                isinstance(item, str) for item in dirty_sources):
+                            raise ValueError("Neplatný seznam lokálně změněných zdrojů.")
+                        clone_instance(str(payload["instance"]), new_name,
+                                       dirty_sources=dirty_sources)
+                        restore_instance_ownership(new_name, owner_uid)
                     else:
                         raise RuntimeError("Neznámá guardian operace.")
                     send_response(connection, response)
@@ -166,12 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner-uid", type=int, required=True)
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--config-root", type=Path, required=True)
     parser.add_argument("--lab", type=Path, required=True)
     parser.add_argument("--instance", required=True)
     parser.add_argument("--expose-address", required=True)
     parser.add_argument("--devel", action="store_true")
     args = parser.parse_args(argv)
-    serve(args.socket, args.owner_uid, args.parent_pid, args.data_root,
+    serve(args.socket, args.owner_uid, args.parent_pid, args.data_root, args.config_root,
           args.lab, args.instance, args.expose_address, devel=args.devel)
     return 0
 
