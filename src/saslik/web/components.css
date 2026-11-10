@@ -93,7 +93,7 @@
 
 .component-row > strong { display: grid; gap: 3px; }
 .component-row > strong > [data-source-status] { width:max-content;max-width:100%;padding:0;border:0;background:none;color:var(--muted);font:11px system-ui,sans-serif;text-align:left;cursor:pointer; }
-.component-row > strong > [data-source-status]::before { content: "●"; margin-right: 5px; }
+.component-row > strong > [data-source-status]::before { content: "\2022"; margin-right: 5px; }
 .component-row > strong > [data-source-status]:not(:disabled):hover { text-decoration:underline; }
 .component-row > strong > [data-source-status].state-current { color: var(--green); }
 .component-row > strong > [data-source-status].state-behind { color: var(--st-warning, #f3b54a); }
