@@ -80,3 +80,24 @@ main{padding-top:18px}
 /* Keep controls and badges aligned with the restrained card geometry. */
 button{border-radius:6px}
 .logout,.pill,.account-menu>summary,#toast,.support-pending{border-radius:7px}
+.launcher{grid-template-columns:minmax(220px,1fr) minmax(170px,.55fr)}
+.workspace-locked #workspace-create-open,.selected-workspace-running #workspace-create-open{pointer-events:none;opacity:.4}
+.workspace-title-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:12px;letter-spacing:normal!important}
+.workspace-title-actions button{height:30px;background:var(--st-surface-raised,#20242a);color:var(--st-text,#cdd1d5)}
+.workspace-create-dialog{width:min(760px,calc(100vw - 32px));padding:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);box-shadow:0 28px 90px #000a}
+.workspace-create-dialog::backdrop{background:#000a}
+.workspace-create-dialog form{padding:20px}
+.workspace-create-dialog header{display:flex;align-items:start;justify-content:space-between;gap:20px;margin-bottom:20px}
+.workspace-create-dialog header small{color:var(--st-link,var(--hot));letter-spacing:1.5px}
+.workspace-create-dialog h2{margin:5px 0 7px;font:650 22px/1.2 system-ui,sans-serif}
+.workspace-create-dialog p{margin:0;color:var(--muted);font:13px/1.45 system-ui,sans-serif}
+.workspace-create-dialog header>button{width:32px;height:32px;padding:0;background:var(--st-surface-raised,#20242a);color:var(--muted);font-size:18px}
+.workspace-create-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.workspace-create-fields>.field{display:grid;gap:7px;color:var(--muted);font-size:11px;letter-spacing:1px}
+.workspace-create-fields>.field input,.workspace-create-fields>.field select{color:var(--text);font-size:13px;letter-spacing:normal}
+.workspace-create-fields .field:first-child{grid-column:1/-1}
+.workspace-create-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.workspace-create-dialog footer>small{color:var(--muted);font-size:11px}
+.workspace-create-dialog footer>div{display:flex;gap:8px}
+.workspace-create-dialog footer button:not(.primary){background:var(--st-surface-raised,#20242a);color:var(--st-text,#cdd1d5)}
+@media(max-width:650px){.launcher{grid-template-columns:1fr 1fr}.workspace-create-fields{grid-template-columns:1fr}.workspace-create-fields .field:first-child{grid-column:auto}.workspace-create-dialog footer{align-items:stretch;flex-direction:column}.workspace-create-dialog footer>div{justify-content:flex-end}.workspace-title-actions small{display:none}}
