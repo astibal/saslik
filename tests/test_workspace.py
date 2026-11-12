@@ -28,7 +28,7 @@ class WorkspaceTests(unittest.TestCase):
                     patch("saslik.workspace.subprocess.run") as process:
                 install_viewer(lab)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertIn(["bash", str(source / "contrib/sharkd-live/scripts/ensure.sh")],
+        self.assertIn(["bash", str(source / "contrib/sharkd-live/scripts/build.sh")],
                       commands)
         self.assertTrue(any(command[1:4] == ["-m", "pip", "install"]
                             for command in commands))

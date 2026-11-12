@@ -499,8 +499,8 @@ def install_viewer(lab: Path) -> None:
     _run([str(viewer_venv / "bin/python"), "-m", "pip", "install", "--upgrade",
           str(viewer_source)])
     # Build the pinned decoder only during install/update. Service restarts must
-    # remain offline and cheap; ensure.sh never replaces an existing build.
-    _run(["bash", str(viewer_source / "contrib/sharkd-live/scripts/ensure.sh")])
+    # remain offline and cheap; build.sh validates and reuses its exact build tree.
+    _run(["bash", str(viewer_source / "contrib/sharkd-live/scripts/build.sh")])
     decoder_environment = os.environ.copy()
     decoder_environment.update({
         "SHARKD_LIVE_EXECUTABLE": str(viewer_source / "contrib/sharkd-live/sharkd-live"),
