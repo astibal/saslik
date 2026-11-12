@@ -57,7 +57,7 @@ class RunnerTests(unittest.TestCase):
             "  Backend: https://helmut:18080",
             "  HTTP CONNECT: http://10.240.0.2:33128", "  CLI: 10.240.0.2:55000",
             "  SOCKS5: socks5h://10.240.0.2:1080",
-            "  PCAP Viewer: https://127.0.0.1:15174/",
+            "  Capera Capture Viewer: https://127.0.0.1:15174/",
         ])
         self.assertEqual("https://helmut:15173/", result["spider_ui"])
         self.assertEqual("https://helmut:18080", result["spider_backend"])

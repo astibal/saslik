@@ -154,7 +154,7 @@ def collect(lab: Path, *, include_lored: bool = False,
     if smithproxy_gui.is_file() and os.access(smithproxy_gui, os.X_OK):
         checks["smithproxy_gui"] = lambda: _http_check(
             f"http://{namespace_address}:18082/healthz")
-    if (lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+    if (lab / "runtime/capera-venv/bin/capera").is_file():
         checks["pcap_viewer"] = lambda: _http_check(
             f"https://{namespace_address}:15174{web_prefix}/viewer/readyz",
             {"Host": "127.0.0.1"}, True)

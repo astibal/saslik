@@ -5,11 +5,11 @@ Saslik owns the workspace, namespace and component lifecycle. Long-running
 components are transient systemd services grouped in a per-lab slice; upstream
 Spider integration scripts are not used at runtime.
 
-The lab also installs and starts the standalone Capture.Zone PCAP Viewer. Its
+The lab also installs and starts Capera Capture Viewer. Its
 catalog, linked captures and derived analysis data live inside the selected
-Saslik workspace. Override its source with `SASLIK_PCAP_VIEWER_REPOSITORY` and
-`SASLIK_PCAP_VIEWER_REF`; the default is the `main` branch of
-`astibal/capture-zone-portal`.
+Saslik workspace. Override its source with `SASLIK_CAPERA_REPOSITORY` and
+`SASLIK_CAPERA_REF`; the default is the `feature/capture-metadata` branch of
+`astibal/capera` while the capture-metadata work is being completed.
 
 Saslik runs the viewer and its authenticated storage API as separate transient
 services. The storage service watches Smithproxy's workspace data, safely picks
@@ -108,7 +108,7 @@ used as a command line: each component adapter must explicitly map an allowed
 key to an option, while unknown keys are ignored. The source-built `lored`
 component is currently a development-only integration and is not gated. A
 future distributed Lored feed or binary may require `component.lored`;
-Smithproxy, Spider, Sift and the PCAP Viewer remain community components.
+Smithproxy, Spider, Sift and Capera Capture Viewer remain community components.
 
 The issuer's Ed25519 public key can still be entered in workspace settings as a
 development override, similarly to the IPinfo integration. The corresponding

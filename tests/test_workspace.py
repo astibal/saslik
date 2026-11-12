@@ -10,13 +10,32 @@ from unittest.mock import patch
 from saslik.workspace import (
     _prepare_cmake_build, _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
     _worktree_matches_ref,
-    component_source_status, discard_source_changes, initialize_state, load_binary_bundle,
+    component_source_status, discard_source_changes, initialize_state, install_viewer,
+    load_binary_bundle,
     ensure_runtime_server_certificate, save_binary_bundle,
     smithproxy_gui_cmake_options, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_capera_install_prepares_decoder_outside_service_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            source = lab / "src/capera"
+            source.mkdir(parents=True)
+            (source / "pyproject.toml").touch()
+            with patch("saslik.workspace._run") as run, \
+                    patch("saslik.workspace.subprocess.run") as process:
+                install_viewer(lab)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(["bash", str(source / "contrib/sharkd-live/scripts/ensure.sh")],
+                      commands)
+        self.assertTrue(any(command[1:4] == ["-m", "pip", "install"]
+                            for command in commands))
+        readiness = process.call_args
+        self.assertEqual("viewer.runtime_check", readiness.args[0][-1])
+        self.assertEqual("live", readiness.kwargs["env"]["SHARKD_LIVE_MODE"])
+
     def test_moved_workspace_discards_stale_cmake_tree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

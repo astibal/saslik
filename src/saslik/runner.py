@@ -171,7 +171,7 @@ class LabRunner:
                 "spider_backend": f"{web}/spider-api/",
                 "sift": f"{web}/sift-api/api/status",
             })
-            if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+            if (self.lab / "runtime/capera-venv/bin/capera").is_file():
                 endpoints["pcap_viewer"] = (
                     f"{web}/viewer/"
                 )
@@ -183,7 +183,7 @@ class LabRunner:
         result["services"] = self._service_status()
         result["runtime_state"], result["runtime_issues"] = runtime_state(
             result["services"],
-            viewer_enabled=(self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file(),
+            viewer_enabled=(self.lab / "runtime/capera-venv/bin/capera").is_file(),
             lored_enabled=self.devel and (self.lab / "build/lore/lored/lored").is_file(),
         )
         result["health"] = self._health_status()
@@ -455,6 +455,7 @@ def parse_endpoints(lines) -> dict[str, str]:
         "Sift": "sift", "API": "smithproxy_api", "HTTP CONNECT": "proxy",
         "SOCKS5": "socks",
         "CLI": "cli", "CA": "ca", "State": "state", "Logs": "logs",
+        "Capera Capture Viewer": "pcap_viewer",
         "PCAP Viewer": "pcap_viewer",
     }
     for raw in lines:

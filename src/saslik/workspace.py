@@ -24,7 +24,7 @@ REPOSITORIES = {
     "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
     "sift": "https://github.com/astibal/sift.git",
     "smithproxy": "https://github.com/astibal/smithproxy.git",
-    "capture-zone-viewer": "git@github.com:astibal/capture-zone-portal.git",
+    "capera": "git@github.com:astibal/capera.git",
     "lored": "git@github.com:astibal/lored.git",
     "smithproxy-gui": "https://github.com/astibal/smithproxy-gui.git",
     "smithproxy-keyway": "https://github.com/astibal/smithproxy-keyway.git",
@@ -36,7 +36,7 @@ COMPONENT_SOURCES = {
     "smithproxy": ("smithproxy", "ref_smithproxy"),
     "spider": ("smithproxy-spider", "ref_spider"),
     "sift": ("sift", "ref_sift"),
-    "pcap-viewer": ("capture-zone-viewer", "ref_pcap_viewer"),
+    "pcap-viewer": ("capera", "ref_pcap_viewer"),
     "lored": ("lored", "ref_lored"),
     "smithproxy-gui": ("smithproxy-gui", "ref_smithproxy_gui"),
     "keyway": ("smithproxy-keyway", "ref_keyway"),
@@ -423,13 +423,15 @@ def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
 
 
 def sync_viewer(lab: Path) -> None:
-    viewer_repo = os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
-                                 REPOSITORIES["capture-zone-viewer"])
-    viewer_ref = os.environ.get("SASLIK_PCAP_VIEWER_REF",
-                                str(setting_value(lab, "ref_pcap_viewer")))
+    viewer_repo = os.environ.get("SASLIK_CAPERA_REPOSITORY",
+                                 os.environ.get("SASLIK_PCAP_VIEWER_REPOSITORY",
+                                                REPOSITORIES["capera"]))
+    viewer_ref = os.environ.get("SASLIK_CAPERA_REF",
+                                os.environ.get("SASLIK_PCAP_VIEWER_REF",
+                                               str(setting_value(lab, "ref_pcap_viewer"))))
     preserved = _preserved_dirty_sources(lab)
-    _sync_checkout(lab / "src/capture-zone-viewer", viewer_repo, viewer_ref,
-                   "capture-zone-viewer" in preserved)
+    _sync_checkout(lab / "src/capera", viewer_repo, viewer_ref,
+                   "capera" in preserved)
     _refresh_preserved_dirty_sources(lab, preserved)
 
 
@@ -445,7 +447,7 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
         "spider": ("smithproxy-spider", "SASLIK_SPIDER_REPOSITORY",
                    str(setting_value(lab, "ref_spider"))),
         "sift": ("sift", "SASLIK_SIFT_REPOSITORY", str(setting_value(lab, "ref_sift"))),
-        "pcap-viewer": ("capture-zone-viewer", "SASLIK_PCAP_VIEWER_REPOSITORY",
+        "pcap-viewer": ("capera", "SASLIK_CAPERA_REPOSITORY",
                         str(setting_value(lab, "ref_pcap_viewer"))),
         "lored": ("lored", "SASLIK_LORED_REPOSITORY",
                   str(setting_value(lab, "ref_lored"))),
@@ -488,14 +490,26 @@ def _refresh_preserved_dirty_sources(lab: Path, preserved: set[str]) -> None:
 
 
 def install_viewer(lab: Path) -> None:
-    viewer_source = lab / "src/capture-zone-viewer"
-    viewer_venv = lab / "runtime/pcap-viewer-venv"
+    viewer_source = lab / "src/capera"
+    viewer_venv = lab / "runtime/capera-venv"
     if not (viewer_source / "pyproject.toml").is_file():
-        raise RuntimeError("Capture.Zone PCAP Viewer nemá instalovatelný pyproject.toml.")
+        raise RuntimeError("Capera nemá instalovatelný pyproject.toml.")
     if not (viewer_venv / "bin/python").is_file():
         _run([sys.executable, "-m", "venv", str(viewer_venv)])
     _run([str(viewer_venv / "bin/python"), "-m", "pip", "install", "--upgrade",
           str(viewer_source)])
+    # Build the pinned decoder only during install/update. Service restarts must
+    # remain offline and cheap; ensure.sh never replaces an existing build.
+    _run(["bash", str(viewer_source / "contrib/sharkd-live/scripts/ensure.sh")])
+    decoder_environment = os.environ.copy()
+    decoder_environment.update({
+        "SHARKD_LIVE_EXECUTABLE": str(viewer_source / "contrib/sharkd-live/sharkd-live"),
+        "SHARKD_EXECUTABLE": str(viewer_source / "contrib/sharkd-live/sharkd-live"),
+        "TSHARK_EXECUTABLE": str(viewer_source / "contrib/sharkd-live/build-http3/run/tshark"),
+        "SHARKD_LIVE_MODE": "live",
+    })
+    subprocess.run([str(viewer_venv / "bin/python"), "-m", "viewer.runtime_check"],
+                   check=True, env=decoder_environment)
 
 
 def _prepare_cmake_build(source: Path, destination: Path) -> None:

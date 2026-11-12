@@ -19,7 +19,7 @@ PROJECTS = {
     "spider": "src/smithproxy-spider",
     "sift": "src/sift",
     "lored": "src/lored",
-    "pcap-viewer": "src/capture-zone-viewer",
+    "pcap-viewer": "src/capera",
     "smithproxy-gui": "src/smithproxy-gui",
 }
 MAX_PATCH_BYTES = 1024 * 1024

@@ -186,23 +186,23 @@ class ComponentTests(unittest.TestCase):
         match = manager._component_orphan_matches
         self.assertTrue(match(
             "pcap-viewer",
-            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
-            "capture-viewer --port 25174",
+            "/srv/saslik/instances/lab1/runtime/capera-venv/bin/"
+            "capera --port 25174",
         ))
         self.assertTrue(match(
             "pcap-viewer",
-            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
-            "capture-storage --port 15175",
+            "/srv/saslik/instances/lab1/runtime/capera-venv/bin/"
+            "capera-storage --port 15175",
         ))
         self.assertFalse(match(
             "pcap-viewer",
-            "/srv/saslik/instances/other/runtime/pcap-viewer-venv/bin/"
-            "capture-viewer --port 25174",
+            "/srv/saslik/instances/other/runtime/capera-venv/bin/"
+            "capera --port 25174",
         ))
         self.assertFalse(match(
             "smithproxy",
-            "/srv/saslik/instances/lab1/runtime/pcap-viewer-venv/bin/"
-            "capture-viewer --port 25174",
+            "/srv/saslik/instances/lab1/runtime/capera-venv/bin/"
+            "capera --port 25174",
         ))
         self.assertTrue(match(
             "pcap-viewer",
@@ -290,10 +290,10 @@ class ComponentTests(unittest.TestCase):
                 "SMITHPROXY_API_KEY=key\nSPIDER_TOKEN=token\n",
                 encoding="utf-8",
             )
-            executable = lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
+            executable = lab / "runtime/capera-venv/bin/capera"
             executable.parent.mkdir(parents=True)
             executable.touch()
-            (executable.parent / "capture-storage").touch()
+            (executable.parent / "capera-storage").touch()
             components = SystemdComponents(lab, "lab1").components()
             component = next(item for item in components
                              if item.name == "pcap-viewer")
@@ -336,7 +336,7 @@ class ComponentTests(unittest.TestCase):
         create_connection.return_value.__enter__.return_value = MagicMock()
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)
-            executable = lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
+            executable = lab / "runtime/capera-venv/bin/capera"
             executable.parent.mkdir(parents=True)
             executable.touch()
             SystemdComponents(lab, "lab1")._wait_ready({"pcap-viewer"})
@@ -360,15 +360,17 @@ class ComponentTests(unittest.TestCase):
                 "SMITHPROXY_API_KEY=key\nSPIDER_TOKEN=token\n",
                 encoding="utf-8",
             )
-            executable = lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
+            executable = lab / "runtime/capera-venv/bin/capera"
             executable.parent.mkdir(parents=True)
             executable.touch()
-            (executable.parent / "capture-storage").touch()
+            (executable.parent / "capera-storage").touch()
             update_settings(lab, {"ipinfo_token": "workspace-secret"})
             viewer = next(component for component in
                           SystemdComponents(lab, "lab1").components()
                           if component.name == "pcap-viewer")
-        self.assertEqual(("IPINFO_TOKEN=workspace-secret",), viewer.environment)
+        self.assertIn("IPINFO_TOKEN=workspace-secret", viewer.environment)
+        self.assertTrue(any(item.startswith("SHARKD_LIVE_EXECUTABLE=")
+                            for item in viewer.environment))
 
     @patch("saslik.components._state_env", return_value={
         "SMITHPROXY_API_URL": "https://localhost:55580",

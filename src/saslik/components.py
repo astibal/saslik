@@ -233,8 +233,8 @@ class SystemdComponents:
         smithproxy = self.lab / "build/smithproxy/smithproxy"
         spider = self.lab / "build/spider/smithproxy-spider"
         sift = self.lab / "build/sift/siftd"
-        pcap_viewer = self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"
-        pcap_storage = self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"
+        pcap_viewer = self.lab / "runtime/capera-venv/bin/capera"
+        pcap_storage = self.lab / "runtime/capera-venv/bin/capera-storage"
         lored = self.lab / "build/lore/lored/lored"
         smithproxy_gui = self.lab / "build/smithproxy-gui/smithproxy-gui"
         config = active_config(self.state) or self.state / "smithproxy.cfg"
@@ -336,6 +336,12 @@ class SystemdComponents:
             result.append(publish_loopback("lored-bridge", 8091))
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
+            capera_source = self.lab / "src/capera/contrib/sharkd-live"
+            capera_environment = (*component_environment(self.lab, "pcap-viewer"),
+                f"SHARKD_LIVE_EXECUTABLE={capera_source / 'sharkd-live'}",
+                f"SHARKD_EXECUTABLE={capera_source / 'sharkd-live'}",
+                f"TSHARK_EXECUTABLE={capera_source / 'build-http3/run/tshark'}",
+                "SHARKD_LIVE_MODE=live")
             result.append(Component(
                 "pcap-storage",
                 (str(pcap_storage), "--workspace", str(viewer_workspace),
@@ -355,7 +361,7 @@ class SystemdComponents:
                  "--disable-local-import", "--port", str(PCAP_VIEWER_PORT), "--no-browser",
                  "--base-path", f"{self.runtime.web_prefix}/viewer/"),
                 self.state / "pcap-viewer.log",
-                component_environment(self.lab, "pcap-viewer"),
+                capera_environment,
                 network_namespace=namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
@@ -568,8 +574,8 @@ class SystemdComponents:
             self.lab / "build/spider/smithproxy-spider",
             self.lab / "build/sift/siftd",
             self.lab / "build/lore/lored/lored",
-            self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer",
-            self.lab / "runtime/pcap-viewer-venv/bin/capture-storage",
+            self.lab / "runtime/capera-venv/bin/capera",
+            self.lab / "runtime/capera-venv/bin/capera-storage",
             self.lab / "build/smithproxy-gui/smithproxy-gui",
         )
         return self._saslik_forwarder_command(command) or any(
@@ -620,7 +626,7 @@ class SystemdComponents:
             "spider.pid": str(self.lab / "build/spider/smithproxy-spider"),
             "sift.pid": str(self.lab / "build/sift/siftd"),
             "frontend.pid": str(self.state / "frontend"),
-            "pcap-viewer.pid": "capture-viewer",
+            "pcap-viewer.pid": "capera",
             "cli-forward.pid": "TCP4-LISTEN:55000",
             "expose-api.pid": "TCP4-LISTEN:55580",
             "expose-proxy.pid": "TCP4-LISTEN:33128",
@@ -644,8 +650,8 @@ class SystemdComponents:
             "sift": (str(self.lab / "build/sift/siftd"),),
             "lored": (str(self.lab / "build/lore/lored/lored"),),
             "pcap-viewer": (
-                str(self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer"),
-                str(self.lab / "runtime/pcap-viewer-venv/bin/capture-storage"),
+                str(self.lab / "runtime/capera-venv/bin/capera"),
+                str(self.lab / "runtime/capera-venv/bin/capera-storage"),
             ),
             "smithproxy-gui": (
                 str(self.lab / "build/smithproxy-gui/smithproxy-gui"),
@@ -942,7 +948,7 @@ class SystemdComponents:
             checks.append((f"http://{address}:8091/readyz", {}, False))
         if "smithproxy-gui" in running_components:
             checks.append((f"http://{address}:{SMITHPROXY_GUI_PORT}/healthz", {}, False))
-        if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
+        if (self.lab / "runtime/capera-venv/bin/capera").is_file():
             # Exercise the real path.  Viewer binds the workspace loopback;
             # the namespace TLS relay is the only intentional ingress.
             checks.append((f"https://{address}:15174{self.runtime.web_prefix}/viewer/readyz",
@@ -1014,8 +1020,8 @@ class SystemdComponents:
         print(f"  UI:      {self.runtime.web_prefix}/spider/")
         print(f"  Backend: {self.runtime.web_prefix}/spider-api/")
         print(f"  Sift:    {self.runtime.web_prefix}/sift-api/api/status")
-        if (self.lab / "runtime/pcap-viewer-venv/bin/capture-viewer").is_file():
-            print(f"PCAP Viewer: {self.runtime.web_prefix}/viewer/")
+        if (self.lab / "runtime/capera-venv/bin/capera").is_file():
+            print(f"Capera Capture Viewer: {self.runtime.web_prefix}/viewer/")
         print(f"Logs:    journalctl -u '{self.runtime.prefix}-*'")
 
 

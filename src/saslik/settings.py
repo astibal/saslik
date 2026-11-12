@@ -70,7 +70,7 @@ SETTINGS = {
     "ref_tuntom": {"label": "Tuntom branch / ref", "secret": False, "default": "main"},
     "ipinfo_token": {
         "label": "ipinfo.io API token",
-        "description": "Geolokační enrichment v CZ PCAP Vieweru.",
+        "description": "Geolokační enrichment v Capera Capture Vieweru.",
         "secret": True,
     },
     "license_issuer_key": {
@@ -82,7 +82,7 @@ SETTINGS = {
     "restart_smithproxy": {"label": "Smithproxy", "secret": False, "default": True},
     "restart_spider": {"label": "Spider", "secret": False, "default": True},
     "restart_sift": {"label": "Sift", "secret": False, "default": True},
-    "restart_pcap_viewer": {"label": "PCAP Viewer", "secret": False, "default": True},
+    "restart_pcap_viewer": {"label": "Capera Capture Viewer", "secret": False, "default": True},
     "restart_pcap_storage": {"label": "Capture storage", "secret": False, "default": True},
     "restart_lored": {"label": "Lored", "secret": False, "default": True},
     "restart_smithproxy_gui": {"label": "Smithproxy GUI", "secret": False, "default": True},
@@ -95,8 +95,8 @@ SETTINGS = {
     "ref_spider": {"label": "Spider branch / ref", "secret": False, "default": "main"},
     "source_sift": {"label": "Sift source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_sift": {"label": "Sift branch / ref", "secret": False, "default": "main"},
-    "source_pcap_viewer": {"label": "PCAP Viewer source", "secret": False, "default": "src", "choices": ("src", "bin")},
-    "ref_pcap_viewer": {"label": "PCAP Viewer branch / ref", "secret": False, "default": "main"},
+    "source_pcap_viewer": {"label": "Capera source", "secret": False, "default": "src", "choices": ("src", "bin")},
+    "ref_pcap_viewer": {"label": "Capera branch / ref", "secret": False, "default": "feature/capture-metadata"},
     "source_lored": {"label": "Lored source", "secret": False, "default": "src", "choices": ("src", "bin")},
     "ref_lored": {"label": "Lored branch / ref", "secret": False, "default": "main"},
     "source_smithproxy_gui": {"label": "Smithproxy GUI source", "secret": False,

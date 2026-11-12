@@ -111,7 +111,9 @@ chroot "$staging" apt-get install -y --no-install-recommends \
     build-essential g++ cmake make pkg-config ninja-build \
     libconfig-dev libconfig++-dev libssl-dev libssh-4 libssh-dev \
     libunwind-dev libmicrohttpd-dev libcurl4-openssl-dev libpam0g-dev \
-    libhyperscan-dev nlohmann-json3-dev \
+    libhyperscan-dev nlohmann-json3-dev libpcap-dev pybind11-dev \
+    flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev \
+    libspeexdsp-dev libnghttp3-dev liblz4-dev \
     swig libffi-dev libxml2-dev libxslt1-dev xmlsec1 \
     iproute2 iptables nftables nginx passt telnet openssl libnss3-tools \
     tshark tcpdump jq less nano

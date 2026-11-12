@@ -14,8 +14,8 @@ DEBUG_COMPONENTS = {
     "spider": ("build/spider/smithproxy-spider", 23451),
     "sift": ("build/sift/siftd", 23452),
     "lored": ("build/lore/lored/lored", 23455),
-    "pcap-viewer": ("runtime/pcap-viewer-venv/bin/capture-viewer", 23453),
-    "pcap-storage": ("runtime/pcap-viewer-venv/bin/capture-storage", 23454),
+    "pcap-viewer": ("runtime/capera-venv/bin/capera", 23453),
+    "pcap-storage": ("runtime/capera-venv/bin/capera-storage", 23454),
 }
 GDB_DEFAULT_COMMANDS = (
     "set pagination off",
