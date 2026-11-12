@@ -85,6 +85,7 @@ WEB_LOG_SOURCES = {
     "spider": "spider.log",
     "spider-frontend": "frontend.log",
     "sift": "sift.log",
+    "gretom": "gretom.log",
     "pcap-storage": "pcap-storage.log",
     "pcap-viewer": "pcap-viewer.log",
     "smithproxy-gui": "smithproxy-gui.log",

@@ -173,6 +173,8 @@ class SystemdComponents:
         optional = (("smithproxy-gui",)
                     if os.access(self.lab / "build/smithproxy-gui/smithproxy-gui", os.X_OK)
                     else ())
+        if os.access(self.lab / "build/gretom/gretom", os.X_OK):
+            optional += ("gretom",)
         return self.BASE_COMPONENT_NAMES + optional + (
             self.DEVEL_COMPONENT_NAMES if self.devel else ())
 
@@ -302,6 +304,17 @@ class SystemdComponents:
                 restart_on_failure=True,
             ),
         ]
+        gretom = self.lab / "build/gretom/gretom"
+        if gretom.is_file() and os.access(gretom, os.X_OK):
+            # Sniff the host end of this workspace's veth. Smithproxy sends GRE
+            # to runtime.host_address; no tunnel device or shared listener.
+            result.insert(0, Component(
+                "gretom",
+                (python, "-m", "saslik.gretom", "--lab", str(self.lab),
+                 "--instance", self.instance, "--interface", self.runtime.host_interface),
+                self.state / "gretom.log",
+                restart_on_failure=component_restart_on_failure(self.lab, "gretom"),
+            ))
         sift_command = [str(sift), "--bind", "0.0.0.0", "--port", "18081"]
         if self.devel and lored.is_file():
             sift_command.extend(("--lored-url", "http://127.0.0.1:8091/v1/query"))
@@ -624,6 +637,7 @@ class SystemdComponents:
         services remain owned and stopped by their systemd control groups.
         """
         markers = {
+            "gretom": (str(self.lab / "build/gretom/gretom"),),
             "smithproxy": (str(self.lab / "build/smithproxy/smithproxy"),),
             "spider": (str(self.lab / "build/spider/smithproxy-spider"),
                        str(self.state / "frontend")),
@@ -733,7 +747,7 @@ class SystemdComponents:
         if component.restart_on_failure:
             command.append("--property=RestartSec=500ms")
         crash_components = {"smithproxy", "spider", "sift", "lored", "pcap-viewer",
-                            "pcap-storage", "smithproxy-gui"}
+                            "pcap-storage", "gretom", "smithproxy-gui"}
         if component.name in crash_components:
             collect_core = setting_value(self.lab, "collect_coredumps") is True
             command.append(f"--property=LimitCORE={'infinity' if collect_core else '0'}")
@@ -827,6 +841,7 @@ class SystemdComponents:
     @staticmethod
     def component_group(component: str) -> tuple[str, ...]:
         groups = {
+            "gretom": ("gretom",),
             "smithproxy": ("smithproxy",),
             "spider": ("spider", "spider-tls", "frontend", "frontend-tls"),
             "sift": ("sift",),
@@ -1013,7 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expose-address", default="127.0.0.1")
     parser.add_argument("--devel", action="store_true")
     parser.add_argument("--component", choices=("smithproxy", "spider", "sift", "lored",
-                                                 "pcap-viewer", "tuntom", "smithproxy-gui"))
+                                                 "pcap-viewer", "tuntom", "gretom", "smithproxy-gui"))
     args = parser.parse_args(argv)
     manager = SystemdComponents(args.lab, args.instance, args.expose_address, devel=args.devel)
     try:

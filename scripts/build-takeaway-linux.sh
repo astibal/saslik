@@ -50,9 +50,11 @@ printf 'Vylučuji captures, logy a ostatní runtime data…\n'
 # similarly named source/configuration directories are not lost.
 common_excludes=(
     --exclude='/lab/state/smithproxy-data/***' \
+    --exclude='/lab/state/gretom/***' \
     --exclude='/lab/state/pcap-viewer/***' \
     --exclude='/lab/state/crashes/***' \
     --exclude='/instances/*/state/smithproxy-data/***' \
+    --exclude='/instances/*/state/gretom/***' \
     --exclude='/instances/*/state/pcap-viewer/***' \
     --exclude='/instances/*/state/crashes/***' \
     --exclude='*.pcap' --exclude='*.pcapng' --exclude='*.har' \

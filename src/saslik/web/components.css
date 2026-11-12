@@ -1,6 +1,6 @@
 .component-table-head,
 .component-row {
-    grid-template-columns: minmax(120px, .8fr) 72px minmax(180px, 1.4fr) minmax(130px, .7fr) 105px;
+    grid-template-columns: minmax(120px, .8fr) 72px minmax(180px, 1.4fr) minmax(130px, .7fr) 140px;
 }
 
 .component-row[data-component="tuntom"] > span[title] {
@@ -276,3 +276,20 @@
 :root[data-saslik-mode="light"] .pill.running i,:root[data-saslik-mode="light"] #log-state.running{background:#d89a00;box-shadow:0 0 9px #d89a0080}
 .takeaway-panel{font-size:12px}.takeaway-create h2{font-size:18px}.takeaway-create>p{font-size:12px}
 .ca-family>header small,.takeaway-indicator{border-radius:7px}
+
+.component-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.component-actions .component-control-open{width:28px;height:28px;padding:0;font:15px/1 system-ui,sans-serif}
+.component-control{width:min(680px,calc(100vw - 32px));max-height:85vh;overflow:auto;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text)}
+.component-control::backdrop{background:#0009}
+.component-control header{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
+.component-control h2{margin:4px 0;font-size:19px}
+.component-control small{color:var(--muted);line-height:1.5}
+.component-control [data-fields]{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.component-control label{display:grid;gap:6px;font-size:13px;align-content:start}
+.component-control input:not([type=checkbox]){width:100%;min-width:0;box-sizing:border-box;background:var(--st-canvas,#0d1013);color:var(--text);border:1px solid var(--line);border-radius:5px;padding:8px}
+.component-control .control-toggle{grid-template-columns:1fr auto}
+.component-control .control-toggle small{grid-column:1/-1}
+.component-control footer{letter-spacing:normal;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding-top:14px}
+.component-control [data-message]{font-size:13px;line-height:1.5}
+.component-control button{flex-shrink:0}
+@media(max-width:720px){.component-row{grid-template-columns:1fr 70px}.component-row .component-actions{grid-column:1/-1}.component-control [data-fields]{grid-template-columns:1fr}.component-control footer{flex-wrap:wrap}}

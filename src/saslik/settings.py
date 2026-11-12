@@ -8,7 +8,54 @@ import tempfile
 from pathlib import Path
 
 
+GRETOM_SETTINGS = {
+    "gretom_prefix": {"label": "Prefix souborů", "default": "gretom", "kind": "prefix",
+                      "description": "Doplní se workspace, ID běhu a čas capture."},
+    "gretom_interface": {"label": "Síťové rozhraní", "default": "auto", "kind": "interface",
+                         "description": "auto = hostitelský konec rozhraní tohoto workspace."},
+    "gretom_rotate_seconds": {"label": "Rotace po sekundách", "default": 60, "kind": "integer",
+                              "min": 0, "max": 86400, "description": "0 vypne časový limit. Kontroluje se při příchodu paketu."},
+    "gretom_rotate_mib": {"label": "Rotace po MiB", "default": 64, "kind": "integer",
+                          "min": 0, "max": 1048576, "description": "0 vypne velikostní limit."},
+    "gretom_rotate_packets": {"label": "Rotace po paketech", "default": 0, "kind": "integer",
+                              "min": 0, "max": 2147483647, "description": "0 vypne limit počtu paketů."},
+    "gretom_midnight": {"label": "Rotovat po půlnoci", "default": False,
+                        "description": "Při příštím paketu v půlnoční hodině, pokud je soubor starší než hodinu."},
+    "gretom_rotation_time": {"label": "Čas uzavření v názvu", "default": True},
+    "gretom_verbose": {"label": "Podrobné logování", "default": False,
+                       "description": "Výpis pro každý paket; zapínej jen při diagnostice."},
+}
+
+
+def validate_gretom_setting(key: str, value: object) -> object:
+    definition = GRETOM_SETTINGS[key]
+    kind = definition.get("kind")
+    valid = False
+    if kind == "integer":
+        valid = (type(value) is int and definition["min"] <= value <= definition["max"])
+    elif kind in {"prefix", "interface"}:
+        pattern = (r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}" if kind == "prefix"
+                   else r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}")
+        valid = isinstance(value, str) and re.fullmatch(pattern, value) is not None
+    else:
+        valid = type(value) is bool
+    if not valid:
+        raise ValueError(f"Neplatná hodnota: {definition['label']}")
+    return value
+
+
+def gretom_settings(lab: Path) -> dict[str, object]:
+    values = load_settings(lab)
+    return {key: validate_gretom_setting(key, values.get(key, definition["default"]))
+            for key, definition in GRETOM_SETTINGS.items()}
+
+
 SETTINGS = {
+    **{key: {**definition, "secret": False, "component": "gretom"}
+       for key, definition in GRETOM_SETTINGS.items()},
+    "source_gretom": {"label": "GRE Tom source", "secret": False, "default": "src", "choices": ("src",)},
+    "ref_gretom": {"label": "GRE Tom branch / ref", "secret": False, "default": "main"},
+    "restart_gretom": {"label": "GRE Tom", "secret": False, "default": True},
     "api_allow_host_networks": {
         "label": "Host-connected networks", "secret": False, "default": True,
     },
@@ -88,6 +135,10 @@ def public_settings(lab: Path) -> dict[str, dict[str, object]]:
                         configured=bool(values.get(key)))
         else:
             item["value"] = values.get(key, definition.get("default", False))
+        if definition.get("component"):
+            for field in ("component", "kind", "description", "min", "max"):
+                if field in definition:
+                    item[field] = definition[field]
         result[key] = item
     return result
 
@@ -98,7 +149,9 @@ def update_settings(lab: Path, changes: dict[str, object]) -> None:
         raise ValueError(f"Neznámé nastavení: {', '.join(sorted(unknown))}")
     values = load_settings(lab)
     for key, raw_value in changes.items():
-        if SETTINGS[key]["secret"]:
+        if key in GRETOM_SETTINGS:
+            values[key] = validate_gretom_setting(key, raw_value)
+        elif SETTINGS[key]["secret"]:
             value = str(raw_value).strip() if raw_value is not None else ""
             if "\0" in value or (not SETTINGS[key].get("multiline") and
                                    ("\n" in value or "\r" in value)):

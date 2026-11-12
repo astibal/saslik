@@ -17,6 +17,43 @@ up completed captures and listens only on loopback; the browser-facing viewer
 uses its private `0600` token through the shared-filesystem API. Startup and the
 Status tab use each service's `/readyz` contract rather than a shallow HTTP ping.
 
+## GRE Tom workspace component
+
+GRE Tom is managed in **Workspace options → Components**, including independent
+updates, Git ref selection, restart-on-failure and logs. Saslik clones
+`astibal/gretom` into `src/gretom` (default ref `main`, repository override
+`SASLIK_GRETOM_REPOSITORY`) and builds only the `gretom` target. Its CMake
+configuration requires libpcap, Python development headers and pybind11 even
+when building only the collector; the appliance includes these dependencies.
+Binary-bundle workspaces build GRE Tom separately as well.
+
+Every component has a **Nastavení** control panel. GRE Tom's panel stores
+workspace-specific values: filename prefix (`gretom`), interface (`auto` =
+workspace host veth), rotation seconds (60), MiB (64), packet count (0 = off),
+midnight rotation (off), rotation timestamp in filenames (on), and verbose
+logging (off). Changes apply on the collector's next start or update. Other
+component panels are placeholders for future settings.
+
+GRE Tom must include the native `-p` filename-prefix option. Saslik passes the
+selected settings directly as arguments; it does not rename capture files.
+The effective prefix includes workspace ID and a unique run identifier, for
+example `gretom-ws001-run-20261109T120000Z-abcd1234-<capture-time>.pcapng`.
+The collector runs on the host end of the workspace veth (`wsNNNh`) by default,
+starts before Smithproxy and writes to `state/gretom/run-*/`. Capture storage
+already watches `state/` recursively and discovers closed, stable `.pcap` and
+`.pcapng` files there. Rotation uses Gretom's existing packet-triggered checks;
+there is no retention cleanup or per-flow capture in this integration.
+
+Configure Smithproxy's `captures.remote` to enable GRE and set `tun_dst` to the
+workspace host address shown in the Network Plan (for example `10.240.0.1`
+for workspace 1). Local capture remains independently controlled by
+`captures.local`; Saslik does not rewrite either setting. Upstream `main`
+(from commit `b94d546`) stores raw GRE frames in `.pcap` and writes native
+PCAPNG records to a sibling `.pcapng` file when Smithproxy uses
+`gre_format = "pcapng"`. Both files are visible to capture storage. Native
+PCAPNG support therefore does not require the local experimental conversion
+of all captures to PCAPNG.
+
 ## Tuntom workspace component
 
 Tuntom is managed in **Workspace options → Components**, independently of the

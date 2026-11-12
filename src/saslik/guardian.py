@@ -24,7 +24,7 @@ from .takeaway_jobs import start_unit as start_takeaway_unit
 from .instance import clone_instance, delete_instance, restore_instance_ownership
 
 
-UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
+UPDATABLE_COMPONENTS = {"smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom", "gretom",
                         "smithproxy-gui"}
 
 

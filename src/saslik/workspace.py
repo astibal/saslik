@@ -19,6 +19,7 @@ from .smithproxy_config import active_config
 
 
 REPOSITORIES = {
+    "gretom": "git@github.com:astibal/gretom.git",
     "tuntom": "git@github.com:astibal/tuntom.git",
     "smithproxy-spider": "https://github.com/astibal/smithproxy-spider.git",
     "sift": "https://github.com/astibal/sift.git",
@@ -30,6 +31,7 @@ REPOSITORIES = {
 }
 
 COMPONENT_SOURCES = {
+    "gretom": ("gretom", "ref_gretom"),
     "tuntom": ("tuntom", "ref_tuntom"),
     "smithproxy": ("smithproxy", "ref_smithproxy"),
     "spider": ("smithproxy-spider", "ref_spider"),
@@ -387,6 +389,7 @@ def sync(lab: Path, smithproxy_ref: str, *, devel: bool = False) -> None:
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
     sync_component(lab, "tuntom")
+    sync_component(lab, "gretom")
     spider_repo = os.environ.get("SASLIK_SPIDER_REPOSITORY", REPOSITORIES["smithproxy-spider"])
     sift_repo = os.environ.get("SASLIK_SIFT_REPOSITORY", REPOSITORIES["sift"])
     smith_repo = os.environ.get("SASLIK_SMITHPROXY_REPOSITORY", REPOSITORIES["smithproxy"])
@@ -436,6 +439,7 @@ def sync_component(lab: Path, component: str, smithproxy_ref: str = "master",
     sources = lab / "src"
     preserved = _preserved_dirty_sources(lab)
     values = {
+        "gretom": ("gretom", "SASLIK_GRETOM_REPOSITORY", str(setting_value(lab, "ref_gretom"))),
         "tuntom": ("tuntom", "SASLIK_TUNTOM_REPOSITORY", str(setting_value(lab, "ref_tuntom"))),
         "smithproxy": ("smithproxy", "SASLIK_SMITHPROXY_REPOSITORY", smithproxy_ref),
         "spider": ("smithproxy-spider", "SASLIK_SPIDER_REPOSITORY",
@@ -513,6 +517,7 @@ def build(lab: Path, *, devel: bool = False) -> None:
     jobs = f"-j{os.cpu_count() or 1}"
     build_type = "Debug" if setting_value(lab, "debug_build") is True else "Release"
     projects = [
+        (lab / "src/gretom", lab / "build/gretom", ["-DBUILD_TESTING=OFF"], "gretom"),
         (lab / "src/tuntom", lab / "build/tuntom", ["-DBUILD_TESTING=OFF"], "tuntom"),
         (lab / "src/smithproxy", lab / "build/smithproxy", ["-DBUILD_TESTING=OFF"], "smithproxy"),
         (lab / "src/smithproxy-spider", lab / "build/spider", [], None),
@@ -568,6 +573,7 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
         install_viewer(lab)
         return
     projects = {
+        "gretom": (lab / "src/gretom", lab / "build/gretom", ["-DBUILD_TESTING=OFF"], "gretom"),
         "tuntom": (lab / "src/tuntom", lab / "build/tuntom", ["-DBUILD_TESTING=OFF"], "tuntom"),
         "smithproxy": (lab / "src/smithproxy", lab / "build/smithproxy",
                        ["-DBUILD_TESTING=OFF"], "smithproxy"),

@@ -16,7 +16,7 @@ from .settings import SETTINGS, load_settings, update_settings
 MARKER_NAME = ".takeaway-first-boot.json"
 PENDING_SECRET = "TAKEAWAY_SECRET_PENDING_FIRST_BOOT"
 RUNTIME_FILES = {"e2e-health.json", "server.csr", "server.ext", "smithproxy-gui.env"}
-RUNTIME_DIRECTORIES = {"crashes", "identities", "pcap-viewer"}
+RUNTIME_DIRECTORIES = {"crashes", "identities", "pcap-viewer", "gretom"}
 CAPTURE_SUFFIXES = {".pcap", ".pcapng", ".har"}
 
 

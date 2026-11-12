@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 PROJECTS = {
+    "gretom": "src/gretom",
     "smithproxy": "src/smithproxy",
     "socle": "src/smithproxy/socle",
     "spider": "src/smithproxy-spider",

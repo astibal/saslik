@@ -23,6 +23,8 @@ from .smithproxy_config import is_initialized
 def runtime_state(services: dict[str, dict], *, viewer_enabled: bool = False,
                   lored_enabled: bool = False) -> tuple[str, list[str]]:
     required = ["smithproxy", "spider", "sift"]
+    if "gretom" in services:
+        required.append("gretom")
     if viewer_enabled:
         required.extend(("pcap-storage", "pcap-viewer"))
     if lored_enabled:
@@ -230,7 +232,7 @@ class LabRunner:
         if action not in {"start", "stop", "reset", "fetch", "status", "update-component"}:
             raise ValueError("Neznámá akce.")
         if action == "update-component" and component not in {
-                "smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom",
+                "smithproxy", "spider", "sift", "lored", "pcap-viewer", "tuntom", "gretom",
                 "smithproxy-gui"}:
             raise ValueError("Neznámá komponenta.")
         branch = validate_ref(branch)
@@ -344,6 +346,8 @@ class LabRunner:
                 commands.extend([
                     workspace + ["viewer-sync", str(self.lab)],
                     workspace + ["viewer-install", str(self.lab)],
+                    workspace + ["component-sync", str(self.lab), "--component", "gretom"],
+                    workspace + ["component-build", str(self.lab), "--component", "gretom"],
                     workspace + ["component-sync", str(self.lab), "--component", "tuntom"],
                     workspace + ["component-build", str(self.lab), "--component", "tuntom"],
                     workspace + ["component-sync", str(self.lab), "--component", "smithproxy-gui"],
