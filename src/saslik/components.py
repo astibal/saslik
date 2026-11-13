@@ -228,79 +228,71 @@ class SystemdComponents:
                     encoding="utf-8",
                 )
 
-    def components(self) -> list[Component]:
-        values = _state_env(self.lab)
-        smithproxy = self.lab / "build/smithproxy/smithproxy"
-        spider = self.lab / "build/spider/smithproxy-spider"
-        sift = self.lab / "build/sift/siftd"
-        pcap_viewer = self.lab / "runtime/capera-venv/bin/capera"
-        pcap_storage = self.lab / "runtime/capera-venv/bin/capera-storage"
-        lored = self.lab / "build/lore/lored/lored"
-        smithproxy_gui = self.lab / "build/smithproxy-gui/smithproxy-gui"
-        config = active_config(self.state) or self.state / "smithproxy.cfg"
+    def _forwarder(self, name: str, service: str, target_port: int, *,
+                   local_only: bool = False) -> Component:
         socat = shutil.which("socat") or "socat"
-        python = sys.executable
-        frontend_server = self.lab / "src/smithproxy-spider/tools/serve-frontend.py"
-        frontend_command = ((python, str(frontend_server)) if frontend_server.is_file()
-                            else (python, "-m", "http.server"))
+        bind = "127.0.0.1" if local_only else self.expose_address
+        listen_port = self.runtime.public_port(service)
+        return Component(
+            name,
+            (socat,
+             f"TCP4-LISTEN:{listen_port},bind={bind},reuseaddr,fork",
+             f"TCP4:{self.runtime.namespace_address}:{target_port}"),
+            self.state / f"{name}.log",
+            restart_on_failure=True,
+        )
+
+    def _publish_loopback(self, name: str, port: int) -> Component:
+        """Publish a loopback-only workspace service on its namespace veth."""
+        socat = shutil.which("socat") or "socat"
+        return Component(
+            name,
+            (socat,
+             f"TCP4-LISTEN:{port},bind={self.runtime.namespace_address},reuseaddr,fork",
+             f"TCP4:127.0.0.1:{port}"),
+            self.state / f"{name}.log",
+            network_namespace=self.runtime.namespace,
+            restart_on_failure=True,
+        )
+
+    def _tls_relay(self, name: str, public_port: int,
+                   upstream_port: int) -> Component:
+        socat = shutil.which("socat") or "socat"
         portal_tls = self.lab.parent.parent / "portal-tls"
         portal_certificate = portal_tls / "certificate.pem"
         portal_key = portal_tls / "private-key.pem"
-        namespace = self.runtime.namespace
-        probe_namespace = self.runtime.probe_namespace
-        namespace_address = self.runtime.namespace_address
+        listen = (
+            f"OPENSSL-LISTEN:{public_port},bind={self.runtime.namespace_address},"
+            f"reuseaddr,fork,cert={portal_certificate},key={portal_key},verify=0"
+        )
+        return Component(
+            name,
+            (socat, listen, f"TCP4:127.0.0.1:{upstream_port}"),
+            self.state / f"{name}.log",
+            network_namespace=self.runtime.namespace,
+            restart_on_failure=True,
+        )
 
-        def forwarder(name: str, service: str, target_port: int, *,
-                      local_only: bool = False) -> Component:
-            bind = "127.0.0.1" if local_only else self.expose_address
-            listen_port = self.runtime.public_port(service)
-            return Component(
-                name,
-                (socat,
-                 f"TCP4-LISTEN:{listen_port},bind={bind},reuseaddr,fork",
-                 f"TCP4:{namespace_address}:{target_port}"),
-                self.state / f"{name}.log",
-                restart_on_failure=True,
-            )
-
-        def publish_loopback(name: str, port: int) -> Component:
-            """Publish a loopback-only workspace service on its namespace veth."""
-            return Component(
-                name,
-                (socat, f"TCP4-LISTEN:{port},bind={namespace_address},reuseaddr,fork",
-                 f"TCP4:127.0.0.1:{port}"),
-                self.state / f"{name}.log",
-                network_namespace=namespace,
-                restart_on_failure=True,
-            )
-
-        def tls_relay(name: str, public_port: int, upstream_port: int) -> Component:
-            listen = (
-                f"OPENSSL-LISTEN:{public_port},bind={namespace_address},reuseaddr,fork,"
-                f"cert={portal_certificate},key={portal_key},verify=0"
-            )
-            return Component(
-                name,
-                (socat, listen, f"TCP4:127.0.0.1:{upstream_port}"),
-                self.state / f"{name}.log",
-                network_namespace=namespace,
-                restart_on_failure=True,
-            )
+    def _core_components(self) -> list[Component]:
+        socat = shutil.which("socat") or "socat"
+        config = active_config(self.state) or self.state / "smithproxy.cfg"
         result = [
             Component(
                 "smithproxy",
-                (str(smithproxy), "--config-file", str(config), "--diagnose", "--no-pidfile"),
+                (str(self.lab / "build/smithproxy/smithproxy"),
+                 "--config-file", str(config), "--diagnose", "--no-pidfile"),
                 self.state / "smithproxy.log",
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 bind_paths=((self.state / "smithproxy-data", Path("/var/smithproxy/data")),),
                 restart_on_failure=component_restart_on_failure(self.lab, "smithproxy"),
             ),
             Component(
                 "cli-forward",
-                (socat, f"TCP4-LISTEN:55000,bind={namespace_address},reuseaddr,fork",
+                (socat,
+                 f"TCP4-LISTEN:55000,bind={self.runtime.namespace_address},reuseaddr,fork",
                  "TCP4:127.0.0.1:55000"),
                 self.state / "cli-forward.log",
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 restart_on_failure=True,
             ),
         ]
@@ -310,30 +302,40 @@ class SystemdComponents:
             # to runtime.host_address; no tunnel device or shared listener.
             result.insert(0, Component(
                 "gretom",
-                (python, "-m", "saslik.gretom", "--lab", str(self.lab),
+                (sys.executable, "-m", "saslik.gretom", "--lab", str(self.lab),
                  "--instance", self.instance, "--interface", self.runtime.host_interface),
                 self.state / "gretom.log",
                 restart_on_failure=component_restart_on_failure(self.lab, "gretom"),
             ))
+        return result
+
+    def _analysis_components(self) -> list[Component]:
+        sift = self.lab / "build/sift/siftd"
+        lored = self.lab / "build/lore/lored/lored"
         sift_command = [str(sift), "--bind", "0.0.0.0", "--port", "18081"]
         if self.devel and lored.is_file():
             sift_command.extend(("--lored-url", "http://127.0.0.1:8091/v1/query"))
-
-        result.append(Component(
+        result = [Component(
             "sift", tuple(sift_command),
             self.state / "sift.log",
-            network_namespace=namespace,
+            network_namespace=self.runtime.namespace,
             restart_on_failure=component_restart_on_failure(self.lab, "sift"),
-        ))
+        )]
         if self.devel and lored.is_file():
             result.append(Component(
                 "lored", (str(lored), "--pack", str(self.state / "lored/lore-pack.json"),
                           "--port", "8091"),
                 self.state / "lored.log",
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "lored"),
             ))
-            result.append(publish_loopback("lored-bridge", 8091))
+            result.append(self._publish_loopback("lored-bridge", 8091))
+        return result
+
+    def _capera_components(self) -> list[Component]:
+        pcap_viewer = self.lab / "runtime/capera-venv/bin/capera"
+        pcap_storage = self.lab / "runtime/capera-venv/bin/capera-storage"
+        result: list[Component] = []
         if pcap_viewer.is_file() and pcap_storage.is_file():
             viewer_workspace = self.state / "pcap-viewer"
             capera_source = self.lab / "src/capera/contrib/sharkd-live"
@@ -347,12 +349,12 @@ class SystemdComponents:
                 (str(pcap_storage), "--workspace", str(viewer_workspace),
                  "--watch-root", str(self.state), "--port", "15175"),
                 self.state / "pcap-storage.log",
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-storage"),
             ))
-            result.append(publish_loopback("pcap-storage-bridge", 15175))
-            result.append(forwarder("expose-pcap-storage", "pcap-storage", 15175,
-                                    local_only=True))
+            result.append(self._publish_loopback("pcap-storage-bridge", 15175))
+            result.append(self._forwarder(
+                "expose-pcap-storage", "pcap-storage", 15175, local_only=True))
             result.append(Component(
                 "pcap-viewer",
                 (str(pcap_viewer), "--storage-url", "http://127.0.0.1:15175",
@@ -362,22 +364,35 @@ class SystemdComponents:
                  "--base-path", f"{self.runtime.web_prefix}/viewer/"),
                 self.state / "pcap-viewer.log",
                 capera_environment,
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "pcap-viewer"),
             ))
-            result.append(tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
+            result.append(self._tls_relay("pcap-viewer-tls", 15174, PCAP_VIEWER_PORT))
+        return result
+
+    def _gui_components(self) -> list[Component]:
+        smithproxy_gui = self.lab / "build/smithproxy-gui/smithproxy-gui"
         if smithproxy_gui.is_file() and os.access(smithproxy_gui, os.X_OK):
-            result.append(Component(
+            return [Component(
                 "smithproxy-gui",
                 (str(smithproxy_gui), "--bind", "0.0.0.0", "--port",
                  str(SMITHPROXY_GUI_PORT), "--base-path",
-                 f"{self.runtime.web_prefix}/smithproxy-gui/"),
+                f"{self.runtime.web_prefix}/smithproxy-gui/"),
                 self.state / "smithproxy-gui.log",
-                network_namespace=namespace,
+                network_namespace=self.runtime.namespace,
                 restart_on_failure=component_restart_on_failure(self.lab, "smithproxy-gui"),
                 environment_files=(self.state / "smithproxy-gui.env",),
-            ))
-        result.extend([
+            )]
+        return []
+
+    def _spider_components(self) -> list[Component]:
+        values = _state_env(self.lab)
+        spider = self.lab / "build/spider/smithproxy-spider"
+        frontend_server = self.lab / "src/smithproxy-spider/tools/serve-frontend.py"
+        frontend_command = ((sys.executable, str(frontend_server))
+                            if frontend_server.is_file()
+                            else (sys.executable, "-m", "http.server"))
+        return [
                 Component(
                     "spider",
                     (str(spider), "--bind", "127.0.0.1", "--port", "18080",
@@ -387,14 +402,14 @@ class SystemdComponents:
                     self.state / "spider.log",
                     (f"SPIDER_SMITHPROXY_KEY={values['SMITHPROXY_API_KEY']}",
                      f"SPIDER_TOKEN={values['SPIDER_TOKEN']}"),
-                    network_namespace=namespace,
+                    network_namespace=self.runtime.namespace,
                     restart_on_failure=component_restart_on_failure(self.lab, "spider"),
                 ),
                 # The frontend is served over HTTPS, so its browser-side API
                 # endpoint must be HTTPS as well.  Keep Spider itself on the
                 # workspace loopback for internal callbacks and terminate TLS
                 # only at the namespace boundary.
-                tls_relay("spider-tls", 18080, 18080),
+                self._tls_relay("spider-tls", 18080, 18080),
                 Component(
                     "frontend",
                     (*frontend_command, str(SPIDER_FRONTEND_PORT), "--bind", "127.0.0.1",
@@ -402,22 +417,37 @@ class SystemdComponents:
                      "--base-path", f"{self.runtime.web_prefix}/spider/",
                      "--backend-path", f"{self.runtime.web_prefix}/spider-api/"),
                     self.state / "frontend.log",
-                    network_namespace=namespace,
+                    network_namespace=self.runtime.namespace,
                 ),
-                tls_relay("frontend-tls", 15173, SPIDER_FRONTEND_PORT),
-        ])
+                self._tls_relay("frontend-tls", 15173, SPIDER_FRONTEND_PORT),
+        ]
+
+    def _proxy_components(self) -> list[Component]:
         # HTTP applications remain on the workspace veth and are published by
         # the shared nginx gateway. Only the forward-proxy protocol needs its
         # own host listener.
+        socat = shutil.which("socat") or "socat"
+        result = []
         for name, port in (("proxy", 33128), ("socks", 1080)):
             result.append(Component(
                 f"expose-{name}",
                 (socat,
                  f"TCP4-LISTEN:{self.runtime.public_port(name)},bind={self.expose_address},reuseaddr,fork",
-                 f"TCP4:{namespace_address}:{port}"),
+                 f"TCP4:{self.runtime.namespace_address}:{port}"),
                 self.state / f"expose-{name}.log",
                 restart_on_failure=True,
             ))
+        return result
+
+    def components(self) -> list[Component]:
+        result = [
+            *self._core_components(),
+            *self._analysis_components(),
+            *self._capera_components(),
+            *self._gui_components(),
+            *self._spider_components(),
+            *self._proxy_components(),
+        ]
         probe_settings = load_probe_settings(data_root_for_lab(self.lab))
         if probe_settings["enabled"]:
             result.append(self._probe_component(
