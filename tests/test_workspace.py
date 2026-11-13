@@ -10,14 +10,75 @@ from unittest.mock import patch
 from saslik.workspace import (
     _prepare_cmake_build, _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
     _worktree_matches_ref,
-    component_source_status, discard_source_changes, initialize_state, install_viewer,
+    ca_details, component_source_status, discard_source_changes, initialize_state, install_viewer,
     load_binary_bundle,
-    ensure_runtime_server_certificate, save_binary_bundle,
+    ensure_runtime_server_certificate, renew_workspace_ca, save_binary_bundle,
     smithproxy_gui_cmake_options, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_workspace_ca_renewal_preserves_key_and_reissues_all_leaf_copies(self):
+        class Runtime:
+            namespace_address = "10.240.0.2"
+            host_address = "10.240.0.1"
+
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            certs = lab / "state/certs/default"
+            certs.mkdir(parents=True)
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(certs / "ca-key.pem"), "-out", str(certs / "ca-cert.pem"),
+                "-days", "1", "-subj", "/CN=Saslik test CA",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            old_key = (certs / "ca-key.pem").read_bytes()
+            with patch("saslik.runtime.WorkspaceRuntime.for_workspace", return_value=Runtime()):
+                value = renew_workspace_ca(lab, "lab1", preserve_key=True)
+
+            self.assertEqual("ok", value["state"])
+            self.assertEqual(old_key, (certs / "ca-key.pem").read_bytes())
+            for prefix in ("portal", "cl"):
+                self.assertEqual((certs / "srv-cert.pem").read_bytes(),
+                                 (certs / f"{prefix}-cert.pem").read_bytes())
+                self.assertEqual((certs / "srv-key.pem").read_bytes(),
+                                 (certs / f"{prefix}-key.pem").read_bytes())
+            self.assertIn("CA:TRUE", subprocess.check_output([
+                "openssl", "x509", "-in", str(certs / "ca-cert.pem"), "-noout", "-text",
+            ], text=True))
+            self.assertEqual(0, subprocess.run([
+                "openssl", "verify", "-CAfile", str(certs / "ca-cert.pem"),
+                str(certs / "srv-cert.pem"),
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode)
+
+    def test_workspace_ca_renewal_can_rotate_key(self):
+        class Runtime:
+            namespace_address = "10.240.0.2"
+            host_address = "10.240.0.1"
+
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            certs = lab / "state/certs/default"
+            certs.mkdir(parents=True)
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(certs / "ca-key.pem"), "-out", str(certs / "ca-cert.pem"),
+                "-days", "1", "-subj", "/CN=Saslik test CA",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            old_public = subprocess.check_output([
+                "openssl", "pkey", "-in", str(certs / "ca-key.pem"), "-pubout",
+            ])
+            with patch("saslik.runtime.WorkspaceRuntime.for_workspace", return_value=Runtime()):
+                renew_workspace_ca(lab, "lab1", preserve_key=False)
+            new_public = subprocess.check_output([
+                "openssl", "pkey", "-in", str(certs / "ca-key.pem"), "-pubout",
+            ])
+            self.assertNotEqual(old_public, new_public)
+            self.assertTrue(ca_details(lab)["available"])
+
     def test_capera_install_prepares_decoder_outside_service_start(self):
         with tempfile.TemporaryDirectory() as directory:
             lab = Path(directory)

@@ -47,7 +47,8 @@ from .identity import active_name, identity_root, list_identities
 from .components import SystemdComponents
 from .settings import provision_settings, public_settings, setting_value
 from .crash import clear_reports, reports as crash_reports, save_bundle as save_crash_bundle
-from .workspace import COMPONENT_SOURCES, component_source_status, source_changes
+from .workspace import (COMPONENT_SOURCES, ca_details, component_source_status,
+                        renew_workspace_ca, source_changes)
 from .version import saslik_version_status
 from .files import (delete_path, file_revision, is_secret, list_directory, make_directory,
                     read_file, target_path, write_file)
@@ -1378,6 +1379,14 @@ class Handler(BaseHTTPRequestHandler):
                                "license_issuer": workspace_issuer_status(lab),
                                "crash_reports": len(crash_reports(lab)),
                                "source_changes": source_changes(lab)})
+        if path == "/api/workspace/ca":
+            workspace = parse_qs(parsed.query).get("workspace", [""])[0]
+            try:
+                lab, _ = self._workspace_target(workspace)
+                return self._json(ca_details(lab))
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                return self._json({"available": False, "state": "error", "detail": str(exc)},
+                                  HTTPStatus.SERVICE_UNAVAILABLE)
         if path == "/api/workspace/source-status":
             query = parse_qs(parsed.query)
             workspace = query.get("workspace", [""])[0]
@@ -1759,7 +1768,7 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
                         "/api/account/password", "/api/account/theme", "/api/public-installers",
                         "/api/network-plan", "/api/probe-settings", "/api/probe/run",
-                        "/api/takeaways/action"}:
+                        "/api/takeaways/action", "/api/workspace/ca/renew"}:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
@@ -1957,6 +1966,22 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Settings musí být objekt.")
                 provision_settings(lab, settings)
                 return self._json({"ok": True, "settings": public_settings(lab)})
+            if path == "/api/workspace/ca/renew":
+                workspace = str(body.get("workspace", ""))
+                lab, instance_name = self._workspace_target(workspace)
+                instance = Instance.load(instance_name)
+                details = renew_workspace_ca(
+                    lab, instance_name, preserve_key=body.get("preserve_key") is not False)
+                services = SystemdComponents(
+                    lab, instance_name, self.server.runner.expose_address,
+                    devel=self.server.devel).status()
+                restarted = services.get("smithproxy", {}).get("state") in {"running", "starting"}
+                if restarted and not self.server.guardian_request(
+                        "restart-component", instance, component="smithproxy"):
+                    return self._json(
+                        {"error": "CA byla obnovena, ale Smithproxy se nepodařilo restartovat.",
+                         "ca": details}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return self._json({"ok": True, "restarted": restarted, "ca": details})
             if path == "/api/crashes/clear":
                 lab, _ = self._workspace_target(str(body.get("workspace", "")))
                 return self._json({"ok": True, "removed": clear_reports(lab)})

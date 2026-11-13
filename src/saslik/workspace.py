@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .settings import setting_value
@@ -713,6 +714,100 @@ def _validate_ca_pair(certificate: Path, key: Path) -> None:
         raise RuntimeError("CA certifikát a privátní klíč k sobě nepatří.")
 
 
+def ca_details(lab: Path) -> dict:
+    """Return public metadata and an actionable expiry state for a workspace CA."""
+    certificate = lab / "state/certs/default/ca-cert.pem"
+    if not certificate.is_file():
+        return {"available": False, "state": "missing", "detail": "CA zatím neexistuje."}
+    output = subprocess.run(
+        ["openssl", "x509", "-in", str(certificate), "-noout", "-subject",
+         "-fingerprint", "-sha256", "-startdate", "-enddate", "-nameopt", "RFC2253"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.splitlines()
+    values = dict(line.split("=", 1) for line in output if "=" in line)
+    not_before = datetime.strptime(values["notBefore"], "%b %d %H:%M:%S %Y %Z").replace(
+        tzinfo=timezone.utc)
+    not_after = datetime.strptime(values["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(
+        tzinfo=timezone.utc)
+    remaining = (not_after - datetime.now(timezone.utc)).total_seconds() / 86400
+    state = "expired" if remaining <= 0 else "critical" if remaining <= 7 else \
+            "warning" if remaining <= 30 else "ok"
+    subject = values.get("subject", "")
+    common_name = next((part[3:] for part in subject.split(",") if part.startswith("CN=")), "—")
+    fingerprint = values.get("sha256 Fingerprint", values.get("SHA256 Fingerprint", ""))
+    return {
+        "available": True, "state": state, "common_name": common_name,
+        "fingerprint": fingerprint, "not_before": not_before.isoformat(),
+        "not_after": not_after.isoformat(), "days_remaining": max(0, int(remaining)),
+    }
+
+
+def renew_workspace_ca(lab: Path, instance: str, *, preserve_key: bool = True) -> dict:
+    """Atomically renew the CA and all leaf copies used by Smithproxy."""
+    from .runtime import WorkspaceRuntime
+    certs = lab / "state/certs/default"
+    old_ca, old_key = certs / "ca-cert.pem", certs / "ca-key.pem"
+    _validate_ca_pair(old_ca, old_key)
+    runtime = WorkspaceRuntime.for_workspace(lab, instance)
+    destinations = [certs / name for name in (
+        "ca-cert.pem", "ca-key.pem", "srv-cert.pem", "srv-key.pem",
+        "portal-cert.pem", "portal-key.pem", "cl-cert.pem", "cl-key.pem",
+    )]
+    with tempfile.TemporaryDirectory(prefix=".ca-renew-", dir=lab / "state") as directory:
+        work = Path(directory)
+        ca_key = work / "ca-key.pem"
+        if preserve_key:
+            shutil.copy2(old_key, ca_key)
+        else:
+            _openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:3072",
+                     "-out", str(ca_key))
+        ca_cert = work / "ca-cert.pem"
+        # Re-signing the existing X.509 document retains its subject and CA
+        # extensions, while replacing validity and optionally its key.
+        _openssl("x509", "-in", str(old_ca), "-signkey", str(ca_key), "-days", "3650",
+                 "-sha256", "-out", str(ca_cert))
+        _validate_ca_pair(ca_cert, ca_key)
+        server_key, request = work / "srv-key.pem", work / "server.csr"
+        extensions, server_cert = work / "server.ext", work / "srv-cert.pem"
+        _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", str(server_key),
+                 "-out", str(request), "-subj", "/CN=smithproxy-test")
+        extensions.write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
+            f"subjectAltName=DNS:smithproxy-test,IP:{runtime.namespace_address},"
+            f"IP:{runtime.host_address}\n", encoding="ascii")
+        _openssl("x509", "-req", "-in", str(request), "-CA", str(ca_cert),
+                 "-CAkey", str(ca_key), "-CAcreateserial", "-out", str(server_cert),
+                 "-days", "365", "-sha256", "-extfile", str(extensions))
+        staged = {"ca-cert.pem": ca_cert, "ca-key.pem": ca_key,
+                  "srv-cert.pem": server_cert, "srv-key.pem": server_key}
+        for prefix in ("portal", "cl"):
+            staged[f"{prefix}-cert.pem"] = work / f"{prefix}-cert.pem"
+            staged[f"{prefix}-key.pem"] = work / f"{prefix}-key.pem"
+            shutil.copy2(server_cert, staged[f"{prefix}-cert.pem"])
+            shutil.copy2(server_key, staged[f"{prefix}-key.pem"])
+        for name in ("ca-key.pem", "srv-key.pem", "portal-key.pem", "cl-key.pem"):
+            staged[name].chmod(0o600)
+        backup = work / "backup"
+        backup.mkdir()
+        for destination in destinations:
+            if destination.exists():
+                shutil.copy2(destination, backup / destination.name)
+        replaced = []
+        try:
+            for destination in destinations:
+                os.replace(staged[destination.name], destination)
+                replaced.append(destination)
+        except OSError:
+            for destination in replaced:
+                saved = backup / destination.name
+                if saved.exists():
+                    os.replace(saved, destination)
+            raise
+    return ca_details(lab)
+
+
 def ensure_runtime_server_certificate(lab: Path, instance: str) -> bool:
     """Renew every Smithproxy API leaf copy when workspace addressing changed."""
     from .runtime import WorkspaceRuntime
@@ -822,7 +917,7 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
         shutil.copy2(ca_cert, certs / "ca-cert.pem")
         shutil.copy2(ca_key, certs / "ca-key.pem")
     else:
-        _openssl("req", "-x509", "-newkey", "rsa:3072", "-sha256", "-days", "365",
+        _openssl("req", "-x509", "-newkey", "rsa:3072", "-sha256", "-days", "3650",
                  "-nodes", "-keyout", str(certs / "ca-key.pem"), "-out",
                  str(certs / "ca-cert.pem"), "-subj",
                  "/CN=Smithproxy Saslik CA/O=Smithproxy Saslik/C=CZ",
