@@ -43,6 +43,74 @@ COMPONENT_SOURCES = {
     "keyway": ("smithproxy-keyway", "ref_keyway"),
 }
 
+DEFAULT_CA_TEMPLATE = {
+    "common_name": "Smithproxy Saslik CA",
+    "organization": "Smithproxy Saslik",
+    "country": "CZ",
+    "validity_days": 3650,
+}
+
+
+def _ca_template_path(lab: Path) -> Path:
+    root = lab.parent.parent if lab.parent.name == "instances" else lab.parent
+    return root / "ca-template.json"
+
+
+def validate_ca_template(value: dict) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("CA šablona musí být objekt.")
+    common_name = str(value.get("common_name", "")).strip()
+    organization = str(value.get("organization", "")).strip()
+    country = str(value.get("country", "")).strip().upper()
+    try:
+        validity_days = int(value.get("validity_days", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Platnost CA musí být počet dní.") from exc
+    if not common_name or len(common_name) > 128 or any(ord(char) < 32 for char in common_name):
+        raise ValueError("Common Name musí mít 1 až 128 znaků.")
+    if len(organization) > 128 or any(ord(char) < 32 for char in organization):
+        raise ValueError("Organization může mít nejvýše 128 znaků.")
+    if country and not re.fullmatch(r"[A-Z]{2}", country):
+        raise ValueError("Country musí být dvoupísmenný ISO kód.")
+    if not 30 <= validity_days <= 10950:
+        raise ValueError("Platnost CA musí být 30 až 10950 dní.")
+    return {"common_name": common_name, "organization": organization,
+            "country": country, "validity_days": validity_days}
+
+
+def load_ca_template(lab: Path) -> dict:
+    try:
+        value = json.loads(_ca_template_path(lab).read_text(encoding="utf-8"))
+        return validate_ca_template(value)
+    except FileNotFoundError:
+        return dict(DEFAULT_CA_TEMPLATE)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return dict(DEFAULT_CA_TEMPLATE)
+
+
+def save_ca_template(lab: Path, value: dict) -> dict:
+    template = validate_ca_template(value)
+    path = _ca_template_path(lab)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix=".ca-template-",
+                                     dir=path.parent, delete=False) as target:
+        json.dump(template, target, indent=2, ensure_ascii=False)
+        target.write("\n")
+        temporary = Path(target.name)
+    os.replace(temporary, path)
+    return template
+
+
+def _ca_subject(template: dict) -> str:
+    def escaped(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("/", "\\/")
+    parts = [f"CN={escaped(template['common_name'])}"]
+    if template["organization"]:
+        parts.append(f"O={escaped(template['organization'])}")
+    if template["country"]:
+        parts.append(f"C={template['country']}")
+    return "/" + "/".join(parts)
+
 
 def _node_major(executable: Path) -> int:
     try:
@@ -733,22 +801,26 @@ def ca_details(lab: Path) -> dict:
     state = "expired" if remaining <= 0 else "critical" if remaining <= 7 else \
             "warning" if remaining <= 30 else "ok"
     subject = values.get("subject", "")
-    common_name = next((part[3:] for part in subject.split(",") if part.startswith("CN=")), "—")
+    subject_parts = dict(part.split("=", 1) for part in subject.split(",") if "=" in part)
+    common_name = subject_parts.get("CN", "—")
     fingerprint = values.get("sha256 Fingerprint", values.get("SHA256 Fingerprint", ""))
     return {
         "available": True, "state": state, "common_name": common_name,
+        "organization": subject_parts.get("O", ""), "country": subject_parts.get("C", ""),
         "fingerprint": fingerprint, "not_before": not_before.isoformat(),
         "not_after": not_after.isoformat(), "days_remaining": max(0, int(remaining)),
     }
 
 
-def renew_workspace_ca(lab: Path, instance: str, *, preserve_key: bool = True) -> dict:
+def renew_workspace_ca(lab: Path, instance: str, *, preserve_key: bool = True,
+                       template: dict | None = None) -> dict:
     """Atomically renew the CA and all leaf copies used by Smithproxy."""
     from .runtime import WorkspaceRuntime
     certs = lab / "state/certs/default"
     old_ca, old_key = certs / "ca-cert.pem", certs / "ca-key.pem"
     _validate_ca_pair(old_ca, old_key)
     runtime = WorkspaceRuntime.for_workspace(lab, instance)
+    template = validate_ca_template(template or load_ca_template(lab))
     destinations = [certs / name for name in (
         "ca-cert.pem", "ca-key.pem", "srv-cert.pem", "srv-key.pem",
         "portal-cert.pem", "portal-key.pem", "cl-cert.pem", "cl-key.pem",
@@ -762,10 +834,11 @@ def renew_workspace_ca(lab: Path, instance: str, *, preserve_key: bool = True) -
             _openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:3072",
                      "-out", str(ca_key))
         ca_cert = work / "ca-cert.pem"
-        # Re-signing the existing X.509 document retains its subject and CA
-        # extensions, while replacing validity and optionally its key.
-        _openssl("x509", "-in", str(old_ca), "-signkey", str(ca_key), "-days", "3650",
-                 "-sha256", "-out", str(ca_cert))
+        _openssl("req", "-x509", "-new", "-utf8", "-key", str(ca_key), "-sha256",
+                 "-days", str(template["validity_days"]), "-out", str(ca_cert),
+                 "-subj", _ca_subject(template),
+                 "-addext", "basicConstraints=critical,CA:TRUE",
+                 "-addext", "keyUsage=critical,keyCertSign,cRLSign")
         _validate_ca_pair(ca_cert, ca_key)
         server_key, request = work / "srv-key.pem", work / "server.csr"
         extensions, server_cert = work / "server.ext", work / "srv-cert.pem"
@@ -917,10 +990,11 @@ def initialize_state(lab: Path, template: str = "spider-sift", *,
         shutil.copy2(ca_cert, certs / "ca-cert.pem")
         shutil.copy2(ca_key, certs / "ca-key.pem")
     else:
-        _openssl("req", "-x509", "-newkey", "rsa:3072", "-sha256", "-days", "3650",
+        ca_template = load_ca_template(lab)
+        _openssl("req", "-x509", "-newkey", "rsa:3072", "-sha256", "-utf8",
+                 "-days", str(ca_template["validity_days"]),
                  "-nodes", "-keyout", str(certs / "ca-key.pem"), "-out",
-                 str(certs / "ca-cert.pem"), "-subj",
-                 "/CN=Smithproxy Saslik CA/O=Smithproxy Saslik/C=CZ",
+                 str(certs / "ca-cert.pem"), "-subj", _ca_subject(ca_template),
                  "-addext", "basicConstraints=critical,CA:TRUE",
                  "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout",

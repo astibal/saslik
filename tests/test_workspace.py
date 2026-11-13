@@ -11,13 +11,27 @@ from saslik.workspace import (
     _prepare_cmake_build, _remove_abandoned_index_lock, _run, _sync_checkout, _worktree_diff_ref,
     _worktree_matches_ref,
     ca_details, component_source_status, discard_source_changes, initialize_state, install_viewer,
+    load_ca_template,
     load_binary_bundle,
-    ensure_runtime_server_certificate, renew_workspace_ca, save_binary_bundle,
+    ensure_runtime_server_certificate, renew_workspace_ca, save_binary_bundle, save_ca_template,
     smithproxy_gui_cmake_options, source_changes,
 )
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_ca_template_is_shared_by_workspaces_and_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "instances/lab1"
+            second = root / "instances/lab2"
+            template = save_ca_template(first, {
+                "common_name": "Example Inspection CA", "organization": "Example Corp",
+                "country": "DE", "validity_days": 7300,
+            })
+            self.assertEqual(template, load_ca_template(second))
+            with self.assertRaises(ValueError):
+                save_ca_template(first, {**template, "validity_days": 29})
+
     def test_workspace_ca_renewal_preserves_key_and_reissues_all_leaf_copies(self):
         class Runtime:
             namespace_address = "10.240.0.2"
@@ -36,9 +50,13 @@ class WorkspaceTests(unittest.TestCase):
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             old_key = (certs / "ca-key.pem").read_bytes()
             with patch("saslik.runtime.WorkspaceRuntime.for_workspace", return_value=Runtime()):
-                value = renew_workspace_ca(lab, "lab1", preserve_key=True)
+                value = renew_workspace_ca(lab, "lab1", preserve_key=True, template={
+                    "common_name": "Renewed Saslik CA", "organization": "Test Lab",
+                    "country": "CZ", "validity_days": 7300,
+                })
 
             self.assertEqual("ok", value["state"])
+            self.assertEqual("Renewed Saslik CA", value["common_name"])
             self.assertEqual(old_key, (certs / "ca-key.pem").read_bytes())
             for prefix in ("portal", "cl"):
                 self.assertEqual((certs / "srv-cert.pem").read_bytes(),
