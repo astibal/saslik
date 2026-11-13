@@ -94,6 +94,44 @@ WEB_LOG_SOURCES = {
     "lored": "lored.log",
     "e2e-probe": "e2e-probe.log",
 }
+PUBLIC_DOWNLOADS = frozenset({
+    "/downloads/skewer-linux-amd64.deb",
+    "/downloads/SkewerSetup.exe",
+    "/downloads/skewer-windows-amd64.zip",
+    "/downloads/tuntom-linux-amd64.deb",
+    "/downloads/tuntom_amd64.deb",
+    "/downloads/tuntom_arm64.deb",
+})
+PUBLIC_ASSETS = frozenset({
+    "/saslik-theme.css", "/saslik-theme.js", "/saslik-palettes.json",
+    "/login.css", "/login-connect.css", "/network-plan.css", "/connect.css",
+    "/connect-custom.css", "/connect.js",
+    "/guides/your_first_traffic/index.html",
+    "/guides/your_first_traffic/guide.css",
+    "/guides/your_first_traffic/guide.js",
+    "/guides/your_first_traffic/guide-flow.svg",
+    "/guides/your_first_traffic/guide-skewer.svg",
+    "/guides/meet_saslik/index.html",
+    "/guides/meet_saslik/about.css",
+    "/guides/meet_saslik/about.js",
+    "/guides/three_ways_in/index.html",
+    "/guides/three_ways_in/routes.css",
+    "/guides/three_ways_in/routes.js",
+    "/guides/inside_the_inspection/index.html",
+    "/guides/inside_the_inspection/inspection.css",
+    "/guides/inside_the_inspection/inspection.js",
+    "/saslik-mark.svg", "/card-scenes/cli.png",
+})
+JSON_POST_PATHS = frozenset({
+    "/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
+    "/api/workspace/action", "/api/workspace/settings",
+    "/api/crashes/clear", "/api/crashes/diagnose",
+    "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
+    "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
+    "/api/account/password", "/api/account/theme", "/api/public-installers",
+    "/api/network-plan", "/api/probe-settings", "/api/probe/run",
+    "/api/takeaways/action", "/api/workspace/ca/renew", "/api/ca/template",
+})
 
 
 def asset_digest(data: bytes) -> str:
@@ -1195,34 +1233,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._ca()
         if path.startswith("/downloads/custom/"):
             return self._custom_installer_download(path.removeprefix("/downloads/custom/"))
-        public_downloads = {
-            "/downloads/skewer-linux-amd64.deb",
-            "/downloads/SkewerSetup.exe",
-            "/downloads/skewer-windows-amd64.zip",
-            "/downloads/tuntom-linux-amd64.deb",
-            "/downloads/tuntom_amd64.deb",
-            "/downloads/tuntom_arm64.deb",
-        }
-        public_assets = {"/saslik-theme.css", "/saslik-theme.js", "/saslik-palettes.json", "/login.css", "/login-connect.css", "/network-plan.css", "/connect.css",
-                         "/connect-custom.css", "/connect.js",
-                         "/guides/your_first_traffic/index.html",
-                         "/guides/your_first_traffic/guide.css",
-                         "/guides/your_first_traffic/guide.js",
-                         "/guides/your_first_traffic/guide-flow.svg",
-                         "/guides/your_first_traffic/guide-skewer.svg",
-                         "/guides/meet_saslik/index.html",
-                         "/guides/meet_saslik/about.css",
-                        "/guides/meet_saslik/about.js",
-                         "/guides/three_ways_in/index.html",
-                         "/guides/three_ways_in/routes.css",
-                         "/guides/three_ways_in/routes.js",
-                         "/guides/inside_the_inspection/index.html",
-                         "/guides/inside_the_inspection/inspection.css",
-                         "/guides/inside_the_inspection/inspection.js",
-                         "/saslik-mark.svg", "/card-scenes/cli.png"}
-        if path in public_assets:
+        if path in PUBLIC_ASSETS:
             return self._asset(path)
-        if path not in public_downloads and path != "/api/skewer" \
+        if path not in PUBLIC_DOWNLOADS and path != "/api/skewer" \
                 and not self._require_portal_session(path):
             return
         if path == "/api/status":
@@ -1764,15 +1777,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._binary_clear()
         if path == "/api/files/upload":
             return self._files_upload(urlparse(self.path).query)
-        if path not in {"/api/action", "/api/cli", "/api/ca/action", "/api/identity/action",
-                        "/api/workspace/action", "/api/workspace/settings",
-                        "/api/crashes/clear", "/api/crashes/diagnose",
-                        "/api/spider/bootstrap", "/api/files/action", "/api/dev/patch",
-                        "/api/dev/debug", "/api/dev/gdb/session", "/api/portal-tls/renew",
-                        "/api/account/password", "/api/account/theme", "/api/public-installers",
-                        "/api/network-plan", "/api/probe-settings", "/api/probe/run",
-                        "/api/takeaways/action", "/api/workspace/ca/renew",
-                        "/api/ca/template"}:
+        if path not in JSON_POST_PATHS:
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
             declared = int(self.headers.get("Content-Length", "0"))
