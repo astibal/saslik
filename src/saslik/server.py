@@ -1164,6 +1164,47 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _gateway_request(self) -> NginxGateway | None:
+        gateway = self.server.gateway
+        supplied = self.headers.get("X-Saslik-Gateway", "")
+        if gateway is None or not secrets.compare_digest(supplied, gateway.auth_secret):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+        return gateway
+
+    def _gateway_auth(self) -> None:
+        if self._gateway_request() is None:
+            return
+        status = HTTPStatus.NO_CONTENT if self._portal_session() else HTTPStatus.UNAUTHORIZED
+        self.send_response(status)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _gateway_api_auth(self) -> None:
+        if self._gateway_request() is None:
+            return
+        original = self.headers.get("X-Saslik-Original-URI", "")
+        match = re.match(r"^/ws(\d{3})/", original)
+        instance = next((item for item in Instance.discover()
+                         if match and item.workspace_id == int(match.group(1))), None)
+        # A logged-in browser may use an application's API from any network.
+        # Non-browser automation is admitted by workspace policy.
+        allowed = instance is not None and self._portal_session()
+        if instance is not None:
+            with self.server.tunnel_targets_lock:
+                tunnel_addresses = tuple(
+                    address for client, address in self.server.tunnel_addresses.items()
+                    if self.server.tunnel_targets.get(client) == instance.name
+                )
+            allowed = allowed or access_allowed(
+                instance.data_dir, self.headers.get("X-Saslik-Client-IP", ""),
+                tunnel_addresses=tunnel_addresses)
+        self.send_response(HTTPStatus.NO_CONTENT if allowed else HTTPStatus.FORBIDDEN)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1176,44 +1217,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             return self._login_page()
         if path == "/api/gateway/auth":
-            gateway = self.server.gateway
-            supplied = self.headers.get("X-Saslik-Gateway", "")
-            if gateway is None or not secrets.compare_digest(supplied, gateway.auth_secret):
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            status = HTTPStatus.NO_CONTENT if self._portal_session() else HTTPStatus.UNAUTHORIZED
-            self.send_response(status)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+            return self._gateway_auth()
         if path == "/api/gateway/api-auth":
-            gateway = self.server.gateway
-            supplied = self.headers.get("X-Saslik-Gateway", "")
-            if gateway is None or not secrets.compare_digest(supplied, gateway.auth_secret):
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            original = self.headers.get("X-Saslik-Original-URI", "")
-            match = re.match(r"^/ws(\d{3})/", original)
-            instance = next((item for item in Instance.discover()
-                             if match and item.workspace_id == int(match.group(1))), None)
-            # A logged-in browser may use an application's API from any
-            # network. Non-browser automation is admitted by workspace policy.
-            allowed = instance is not None and self._portal_session()
-            if instance is not None:
-                with self.server.tunnel_targets_lock:
-                    tunnel_addresses = tuple(
-                        address for client, address in self.server.tunnel_addresses.items()
-                        if self.server.tunnel_targets.get(client) == instance.name
-                    )
-                allowed = allowed or access_allowed(
-                    instance.data_dir, self.headers.get("X-Saslik-Client-IP", ""),
-                    tunnel_addresses=tunnel_addresses)
-            self.send_response(HTTPStatus.NO_CONTENT if allowed else HTTPStatus.FORBIDDEN)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+            return self._gateway_api_auth()
         if path == "/logout":
             token = self._portal_token()
             with self.server.portal_sessions_lock:
