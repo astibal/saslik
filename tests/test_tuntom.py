@@ -37,6 +37,18 @@ class TuntomTests(unittest.TestCase):
         backend.stop.assert_called_once()
         self.assertFalse(sessions.leases.leases)
 
+    def test_heartbeat_recovers_endpoint_removed_by_workspace_restart(self):
+        backend = Mock(supports_recovery=True)
+        backend.healthy.return_value = False
+        sessions = TunnelSessions(backend)
+        opened = sessions.request("peer", {"action": "tunnel-open"}, bytes(32))
+        heartbeat = sessions.request("peer", {
+            "action": "tunnel-heartbeat",
+            "context": opened["tunnel"]["context"],
+        }, bytes(32))
+        backend.recover.assert_called_once_with(sessions.leases.leases["peer"])
+        self.assertEqual("preparing", heartbeat["tunnel"]["state"])
+
     def test_expired_context_cannot_renew_replacement(self):
         now = [0]
         sessions = TunnelSessions(Mock(), clock=lambda: now[0])

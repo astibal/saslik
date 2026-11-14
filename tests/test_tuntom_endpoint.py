@@ -78,6 +78,23 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(directory.exists())
         self.assertNotIn(self.lease.slot, self.backend.endpoints)
 
+    @patch("saslik.tuntom_endpoint.os.geteuid", return_value=0)
+    def test_recover_recreates_collected_endpoint(self, _):
+        key = bytes(range(16))
+        self.backend.start(self.lease, key)
+        self.backend.run.side_effect = lambda command: (
+            (_ for _ in ()).throw(subprocess.CalledProcessError(3, command))
+            if command[:3] == ["systemctl", "is-active", "--quiet"] else
+            Mock(stdout="[]")
+        )
+        self.assertFalse(self.backend.healthy(self.lease))
+        self.backend.run.side_effect = None
+        self.backend.run.return_value = Mock(stdout="[]")
+        self.backend.recover(self.lease)
+        component = self.manager._start_component.call_args.args[0]
+        self.assertEqual("TUNTOM_SECRET=" + key.hex() + "\n",
+                         component.environment_files[0].read_text())
+
     @patch("saslik.tuntom_endpoint.os.geteuid", return_value=1000)
     def test_unprivileged_start_rejected(self, _):
         with self.assertRaises(PermissionError):

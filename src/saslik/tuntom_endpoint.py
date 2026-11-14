@@ -20,6 +20,8 @@ from . import licensing
 
 
 class SystemdTunnelEndpoint:
+    supports_recovery = True
+
     def __init__(self, manager: SystemdComponents, binary: Path, *, runtime=Path("/run"),
                  netns_root=Path("/run/netns")):
         self.manager, self.binary, self.runtime = manager, binary, runtime
@@ -123,3 +125,31 @@ class SystemdTunnelEndpoint:
         (directory / "secret.env").unlink(missing_ok=True)
         directory.rmdir()
         del self.endpoints[lease.slot]
+
+    def healthy(self, lease: TunnelLease) -> bool:
+        if lease.slot not in self.endpoints:
+            return False
+        try:
+            self.run([
+                "systemctl", "is-active", "--quiet",
+                self.manager.runtime.unit_name(f"tuntom-{lease.slot}"),
+            ])
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def recover(self, lease: TunnelLease) -> None:
+        """Recreate an endpoint killed outside the lease supervisor."""
+        directory = self.endpoints.get(lease.slot)
+        if directory is None:
+            raise RuntimeError("Tunnel endpoint reservation is missing")
+        try:
+            line = (directory / "secret.env").read_text(encoding="ascii").strip()
+            name, value = line.split("=", 1)
+            key = bytes.fromhex(value) if name == "TUNTOM_SECRET" else b""
+        except (OSError, ValueError):
+            key = b""
+        if len(key) != 16:
+            raise RuntimeError("Tunnel endpoint secret is unavailable")
+        self.stop(lease)
+        self.start(lease, key)

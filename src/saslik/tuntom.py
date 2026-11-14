@@ -163,6 +163,10 @@ class TunnelSessions:
             if lease is None or not secrets.compare_digest(str(request.get("context", "")), lease.context):
                 raise ValueError("Tunnel session expired or replaced")
             if action == "tunnel-heartbeat":
+                if (getattr(self.backend, "supports_recovery", False)
+                        and not self.backend.healthy(lease)):
+                    lease.ready = False
+                    self.backend.recover(lease)
                 lease.deadline = self.leases.clock() + self.leases.ttl
                 return {"ok": True, "tunnel": lease.public(), "lease_seconds": self.leases.ttl}
             if action == "tunnel-close":
