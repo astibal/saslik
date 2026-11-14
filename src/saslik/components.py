@@ -228,6 +228,58 @@ class SystemdComponents:
                     encoding="utf-8",
                 )
 
+    def prepare_lored(self) -> None:
+        """Collect and compile the current Lored pack before starting the daemon."""
+        source = self.lab / "src/lored/lorekeeper"
+        collector = source / "tools/collect.py"
+        manifest = source / "providers.json"
+        lorekeeper = self.lab / "build/lore/lorekeeper/lorekeeper"
+        missing = [path for path in (collector, manifest, lorekeeper) if not path.is_file()]
+        if missing:
+            raise RuntimeError(
+                "Lored collection není sestavená nebo úplná: "
+                + ", ".join(str(path.relative_to(self.lab)) for path in missing)
+            )
+        token = setting_value(self.lab, "ipinfo_token")
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError(
+                "Lored collection vyžaduje IPinfo token v nastavení workspace."
+            )
+        workspace = self.state / "lored"
+        workspace.mkdir(parents=True, exist_ok=True)
+        # The workspace remains browsable through Saslik's user-owned file UI;
+        # only the derived credential itself is private.
+        workspace.chmod(0o755)
+        token_path = workspace / "ipinfo-token"
+        descriptor, temporary = tempfile.mkstemp(prefix=".ipinfo-token.", dir=workspace)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(token.strip() + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, token_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        cache = workspace / "collection-cache"
+        ipinfo_cache = workspace / "ipinfo-cache"
+        cache.mkdir(mode=0o755, exist_ok=True)
+        ipinfo_cache.mkdir(mode=0o755, exist_ok=True)
+        cache.chmod(0o755)
+        ipinfo_cache.chmod(0o755)
+        _run([
+            sys.executable, "-B", str(collector),
+            "--manifest", str(manifest),
+            "--lorekeeper", str(lorekeeper),
+            "--cache-dir", str(cache),
+            "--output", str(workspace / "lore-pack.json"),
+            "--max-age-hours", "48",
+            "--geography", "on",
+            "--collection-gate-relaxed",
+            "--ipinfo-token-file", str(token_path),
+            "--ipinfo-cache-dir", str(ipinfo_cache),
+        ])
+
     def _forwarder(self, name: str, service: str, target_port: int, *,
                    local_only: bool = False) -> Component:
         socat = shutil.which("socat") or "socat"
@@ -850,6 +902,8 @@ class SystemdComponents:
         components = self.components()
         components, runtime_commands = self._preflight_licenses(
             components, skip_unlicensed=True)
+        if "lored" in {component.name for component in components}:
+            self.prepare_lored()
         self.down()
         self._stop_legacy_processes()
         try:
@@ -922,6 +976,8 @@ class SystemdComponents:
             missing = sorted(selected.difference(item.name for item in components))
             raise RuntimeError("Chybí runtime komponenty: " + ", ".join(missing))
         components, runtime_commands = self._preflight_licenses(components)
+        if component == "lored":
+            self.prepare_lored()
         self.stop_component(component)
         for item in components:
             self._start_component(item, runtime_commands[item.name])

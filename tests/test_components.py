@@ -409,6 +409,42 @@ class ComponentTests(unittest.TestCase):
         self.assertIn("--lored-url", sift_component.command)
         self.assertIn("http://127.0.0.1:8091/v1/query", sift_component.command)
 
+    @patch("saslik.components._run")
+    def test_lored_collection_uses_workspace_token_and_cache(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            for relative in ("src/lored/lorekeeper/tools/collect.py",
+                             "src/lored/lorekeeper/providers.json",
+                             "build/lore/lorekeeper/lorekeeper"):
+                path = lab / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            update_settings(lab, {"ipinfo_token": "workspace-secret"})
+            manager = SystemdComponents(lab, "lab1", devel=True)
+            manager.prepare_lored()
+            token = lab / "state/lored/ipinfo-token"
+            command = run.call_args.args[0]
+            self.assertEqual("workspace-secret\n", token.read_text(encoding="utf-8"))
+            self.assertEqual(0o600, token.stat().st_mode & 0o777)
+            self.assertEqual("-B", command[1])
+            self.assertIn("--ipinfo-token-file", command)
+            self.assertIn("--collection-gate-relaxed", command)
+            self.assertIn(str(token), command)
+            self.assertIn(str(lab / "state/lored/collection-cache"), command)
+            self.assertIn(str(lab / "state/lored/ipinfo-cache"), command)
+
+    def test_lored_collection_requires_ipinfo_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            for relative in ("src/lored/lorekeeper/tools/collect.py",
+                             "src/lored/lorekeeper/providers.json",
+                             "build/lore/lorekeeper/lorekeeper"):
+                path = lab / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            with self.assertRaisesRegex(RuntimeError, "IPinfo token"):
+                SystemdComponents(lab, "lab1", devel=True).prepare_lored()
+
     @patch("saslik.components._state_env", return_value={
         "SMITHPROXY_API_URL": "https://localhost:55580",
         "SMITHPROXY_CALLBACK_URL": "http://localhost:18080/webhook",

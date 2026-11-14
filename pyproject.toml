@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "Smithproxy project" }]
 dependencies = [
+    "maxminddb>=2.6,<4",
     "PyYAML>=6,<7",
     "segno>=1.6,<2",
 ]

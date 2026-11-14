@@ -626,6 +626,9 @@ def build(lab: Path, *, devel: bool = False) -> None:
         if target:
             command.extend(["--target", target])
         _run(command)
+        if target == "lored":
+            _run(["cmake", "--build", str(destination), jobs,
+                  "--target", "lorekeeper"])
         if target == "tuntom":
             _publish_tuntom(lab)
     install_viewer(lab)
@@ -685,6 +688,9 @@ def build_component(lab: Path, component: str, *, devel: bool = False) -> None:
     if target:
         command.extend(["--target", target])
     _run(command)
+    if component == "lored":
+        _run(["cmake", "--build", str(destination),
+              f"-j{os.cpu_count() or 1}", "--target", "lorekeeper"])
     if component == "tuntom":
         _publish_tuntom(lab)
 

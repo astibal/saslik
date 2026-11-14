@@ -70,7 +70,7 @@ SETTINGS = {
     "ref_tuntom": {"label": "Tuntom branch / ref", "secret": False, "default": "main"},
     "ipinfo_token": {
         "label": "ipinfo.io API token",
-        "description": "Geolokační enrichment v Capera Capture Vieweru.",
+        "description": "Geolokační enrichment v Capeře a databázi Loredu.",
         "secret": True,
     },
     "license_issuer_key": {
