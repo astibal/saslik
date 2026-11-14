@@ -51,8 +51,8 @@ from .workspace import (COMPONENT_SOURCES, ca_details, component_source_status,
                         load_ca_template, renew_workspace_ca, save_ca_template,
                         source_changes, validate_ca_template)
 from .version import saslik_version_status
-from .files import (delete_path, file_revision, is_secret, list_directory, make_directory,
-                    read_file, target_path, write_file)
+from .files import (delete_path, file_revision, is_secret, known_places, largest_files,
+                    list_directory, make_directory, read_file, target_path, write_file)
 from .dev import (MAX_PATCH_BYTES, apply_named_patch, clear_patch_history,
                   list_patches, reapply_patch, remember_applied_patch,
                   revert_all_patches, revert_patch)
@@ -1356,6 +1356,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self._workspaces())
         if path == "/api/files/list":
             return self._files_list(parsed.query)
+        if path == "/api/files/overview":
+            return self._files_overview(parsed.query)
+        if path == "/api/files/largest":
+            return self._files_largest(parsed.query)
         if path == "/api/files/read":
             return self._files_read(parsed.query)
         if path == "/api/files/download":
@@ -1476,6 +1480,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             lab, value = self._file_query(query)
             self._json(list_directory(lab, value))
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_overview(self, query: str) -> None:
+        try:
+            values = parse_qs(query)
+            lab, _ = self._workspace_target(values.get("workspace", [""])[0])
+            self._json({"places": known_places(lab)})
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _files_largest(self, query: str) -> None:
+        try:
+            values = parse_qs(query)
+            lab, _ = self._workspace_target(values.get("workspace", [""])[0])
+            self._json(largest_files(lab))
         except (OSError, ValueError, RuntimeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 

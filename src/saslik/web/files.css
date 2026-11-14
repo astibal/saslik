@@ -7,7 +7,7 @@
 .files-only { margin:0; overflow:hidden; }
 .files-only main { width:100%; height:100dvh; }
 .files-only #files { display:block!important; margin:0; border:0; border-radius:0; height:100dvh; }
-.files-only .files-layout { height:calc(100dvh - 54px); min-height:0; }
+.files-only .files-layout { height:calc(100dvh - 97px); min-height:0; }
 .files-toolbar nav button { font-size:11px; }
 .file-row b { font-size:11px; }
 .file-row small { font-size:11px; }

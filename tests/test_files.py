@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 from saslik.files import (
-    delete_path, is_locked, is_secret, list_directory, make_directory, read_file,
-    target_path, write_file,
+    delete_path, is_locked, is_secret, known_places, largest_files, list_directory,
+    make_directory, read_file, target_path, write_file,
 )
 
 
@@ -62,6 +62,32 @@ class FilesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 delete_path(Path(directory), "")
+
+    def test_known_places_only_include_existing_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lab = Path(directory)
+            (lab / "state/smithproxy-data").mkdir(parents=True)
+            (lab / "src").mkdir()
+            places = {item["key"]: item["path"] for item in known_places(lab)}
+            self.assertEqual("state/smithproxy-data", places["captures"])
+            self.assertEqual("src", places["sources"])
+            self.assertNotIn("builds", places)
+
+    def test_largest_files_are_sorted_and_do_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lab = root / "lab"
+            outside = root / "outside"
+            lab.mkdir()
+            outside.mkdir()
+            (lab / "small.bin").write_bytes(b"x" * 10)
+            (lab / "large.bin").write_bytes(b"x" * 100)
+            (outside / "huge.bin").write_bytes(b"x" * 1000)
+            (lab / "escape").symlink_to(outside, target_is_directory=True)
+            result = largest_files(lab)
+            self.assertEqual(["large.bin", "small.bin"],
+                             [item["path"] for item in result["files"]])
+            self.assertEqual([100, 10], [item["size"] for item in result["files"]])
 
 
 if __name__ == "__main__":

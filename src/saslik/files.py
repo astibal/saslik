@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import os
 import shutil
 import tempfile
@@ -17,6 +18,15 @@ LOCKED_PATHS = {
 }
 LOCKED_TREES = ("state/certs",)
 SECRET_PATHS = {"state/state.env", "state/smithproxy-gui.env"}
+KNOWN_PLACES = (
+    ("captures", "Captures", "Zachycený provoz Smithproxy", "state/smithproxy-data"),
+    ("capera", "Capera library", "Importované a zpracované PCAP soubory", "state/pcap-viewer"),
+    ("logs", "Stav a logy", "Logy komponent a provozní stav workspace", "state"),
+    ("certificates", "Certifikáty", "CA a certifikáty workspace", "state/certs"),
+    ("sources", "Zdrojové stromy", "Checkouty jednotlivých komponent", "src"),
+    ("builds", "Buildy", "Přeložené binárky a mezivýsledky", "build"),
+    ("runtime", "Runtime", "Virtuální prostředí a pomocné runtime soubory", "runtime"),
+)
 
 
 def relative_path(value: str) -> Path:
@@ -77,6 +87,61 @@ def list_directory(lab: Path, value: str = "") -> dict[str, object]:
     stat = target.stat()
     return {"path": relative.as_posix(), "entries": entries,
             "revision": f"{stat.st_mtime_ns}:{len(entries)}"}
+
+
+def known_places(lab: Path) -> list[dict[str, str]]:
+    result = []
+    for key, label, description, value in KNOWN_PLACES:
+        target, relative = target_path(lab, value, allow_missing=True)
+        if target.is_dir() and not target.is_symlink():
+            result.append({"key": key, "label": label, "description": description,
+                           "path": relative.as_posix()})
+    return result
+
+
+def largest_files(lab: Path, *, limit: int = 30,
+                  scan_limit: int = 250_000) -> dict[str, object]:
+    """Find large regular files without following links outside the workspace."""
+    if lab.is_symlink() or not lab.is_dir():
+        raise ValueError("Kořen workspace musí být běžný adresář.")
+    count = 0
+    skipped = 0
+    heap: list[tuple[int, str]] = []
+    stack = [lab]
+    while stack and count < scan_limit:
+        directory = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            skipped += 1
+            continue
+        for entry in entries:
+            if count >= scan_limit:
+                break
+            count += 1
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                relative = Path(entry.path).relative_to(lab)
+                if is_secret(relative):
+                    continue
+                size = entry.stat(follow_symlinks=False).st_size
+                item = (size, relative.as_posix())
+                if len(heap) < limit:
+                    heapq.heappush(heap, item)
+                elif item > heap[0]:
+                    heapq.heapreplace(heap, item)
+            except OSError:
+                skipped += 1
+    files = [{"path": path, "size": size, "locked": is_locked(Path(path))}
+             for size, path in sorted(heap, reverse=True)]
+    return {"files": files, "scanned": count, "skipped": skipped,
+            "truncated": bool(stack) or count >= scan_limit}
 
 
 def file_revision(lab: Path, value: str) -> str:
